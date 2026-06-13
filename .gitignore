@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/beats.db
+data/models/
+data/features/
+oauth.json
+*.egg-info/
+.DS_Store
