@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
+from app.core.config import get_settings, setup_oauth_file
 from app.db.database import create_tables, AsyncSessionLocal
 from app.db.seeder import seed_catalog
 from app.routers import greeting, recommendations, log, mood, analytics, journey, search, ml, ytdlp
@@ -26,6 +26,7 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     logger.info("🎵 Beats backend starting up...")
+    setup_oauth_file()  # write oauth.json from env var on cloud platforms
 
     # Create DB tables
     await create_tables()
