@@ -66,9 +66,24 @@ def get_ytmusic():
     try:
         from ytmusicapi import YTMusic
         oauth_path = settings.YTMUSIC_OAUTH_PATH
+        
         if os.path.exists(oauth_path):
-            _ytmusic = YTMusic(oauth_path)
-            logger.info(f"[ytmusicapi] Authenticated via {oauth_path}")
+            try:
+                # Load the json file contents to initialize properly
+                with open(oauth_path, "r") as f:
+                    oauth_content = json.load(f)
+                
+                # Check if it contains explicit desktop headers or browser contents
+                if "headers" in oauth_content:
+                    _ytmusic = YTMusic(oauth_path)
+                else:
+                    # Treat it as a direct client/token format dict
+                    _ytmusic = YTMusic(auth=json.dumps(oauth_content))
+                
+                logger.info(f"[ytmusicapi] Authenticated via {oauth_path}")
+            except Exception as inner_e:
+                logger.warning(f"[ytmusicapi] Structural auth file read failed: {inner_e}, falling back...")
+                _ytmusic = YTMusic()
         else:
             _ytmusic = YTMusic()
             logger.info("[ytmusicapi] Unauthenticated mode")
