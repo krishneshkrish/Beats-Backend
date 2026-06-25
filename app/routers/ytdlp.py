@@ -43,7 +43,7 @@ def _make_opts(extra: dict = {}) -> dict:
         "extractor_args": {
             "youtube": {
                 "player_client": ["android", "ios"],
-                "skip": ["webpage"]
+                "skip": ["webpage", "configs"]
             }
         },
         **extra,
