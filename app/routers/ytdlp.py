@@ -1,11 +1,13 @@
 """
 Beats — Media Router (ytmusicapi + yt-dlp)
 ───────────────────────────────────────────
-ytmusicapi  → search, queue (YouTube Music's real algorithm), lyrics, charts
+ytmusicapi  → search, queue (YouTube Music real algorithm), lyrics, charts
 yt-dlp      → stream URL extraction (audio playback URLs)
 
-Auth: ytmusicapi needs oauth.json (run `ytmusicapi oauth` once to generate).
-If oauth.json is missing, falls back to yt-dlp only mode (no auth needed).
+Auth:
+  - ytmusicapi: uses oauth.json (written from OAUTH_JSON env var on cloud)
+  - yt-dlp: uses cookies.txt (written from COOKIES_B64 env var on cloud)
+             cookies bypass YouTube bot detection on datacenter IPs
 """
 
 import os
@@ -18,14 +20,39 @@ from typing import Optional
 
 import yt_dlp
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
-
 from app.models.schemas import Song
+from app.core.config import get_settings
 
 logger = logging.getLogger("beats.media")
 router = APIRouter(prefix="/api/yt", tags=["media"])
 
-OAUTH_PATH = os.environ.get("YTMUSIC_OAUTH_PATH", "./oauth.json")
+settings = get_settings()
+COOKIES_PATH = settings.YT_COOKIES_PATH
+
+
+# ── yt-dlp option builder ─────────────────────────────────────────────────────
+
+def _make_opts(extra: dict = {}) -> dict:
+    """Build yt-dlp opts, injecting cookies if available."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        **extra,
+    }
+    if os.path.exists(COOKIES_PATH):
+        opts["cookiefile"] = COOKIES_PATH
+    return opts
+
+
+def _search_opts() -> dict:
+    return _make_opts({"extract_flat": True})
+
+
+def _stream_opts() -> dict:
+    return _make_opts({
+        "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+    })
 
 
 # ── ytmusicapi client (lazy init) ─────────────────────────────────────────────
@@ -38,40 +65,17 @@ def get_ytmusic():
         return _ytmusic
     try:
         from ytmusicapi import YTMusic
-        if os.path.exists(OAUTH_PATH):
-            try:
-                _ytmusic = YTMusic(OAUTH_PATH)
-                logger.info(f"[ytmusicapi] Authenticated via {OAUTH_PATH}")
-                return _ytmusic
-            except Exception as auth_err:
-                logger.warning(
-                    f"[ytmusicapi] Authenticated init failed: {auth_err} — "
-                    "falling back to unauthenticated mode"
-                )
-        
-        _ytmusic = YTMusic()          # unauthenticated — limited but works
-        logger.info("[ytmusicapi] Running unauthenticated")
+        oauth_path = settings.YTMUSIC_OAUTH_PATH
+        if os.path.exists(oauth_path):
+            _ytmusic = YTMusic(oauth_path)
+            logger.info(f"[ytmusicapi] Authenticated via {oauth_path}")
+        else:
+            _ytmusic = YTMusic()
+            logger.info("[ytmusicapi] Unauthenticated mode")
         return _ytmusic
     except Exception as e:
-        logger.warning(f"[ytmusicapi] Init failed: {e} — falling back to yt-dlp only")
+        logger.warning(f"[ytmusicapi] Init failed: {e}")
         return None
-
-
-# ── yt-dlp presets ────────────────────────────────────────────────────────────
-
-_SEARCH_OPTS = {
-    "quiet": True,
-    "no_warnings": True,
-    "extract_flat": True,
-    "skip_download": True,
-}
-
-_STREAM_OPTS = {
-    "quiet": True,
-    "no_warnings": True,
-    "skip_download": True,
-    "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
-}
 
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
@@ -91,9 +95,8 @@ async def _extract(opts: dict, url: str) -> dict | None:
 
 
 async def _get_stream_url(video_id: str) -> str | None:
-    """Extract direct audio stream URL for a YouTube video ID."""
     url = f"https://youtube.com/watch?v={video_id}"
-    info = await _extract(_STREAM_OPTS, url)
+    info = await _extract(_stream_opts(), url)
     if not info:
         return None
     if info.get("url"):
@@ -117,7 +120,6 @@ def _best_thumbnail(thumbnails) -> str:
 
 
 def _duration_to_seconds(length: str | None) -> int:
-    """Convert 'mm:ss' or 'h:mm:ss' string to seconds."""
     if not length:
         return 0
     try:
@@ -132,30 +134,25 @@ def _duration_to_seconds(length: str | None) -> int:
 
 
 def _ytmusic_track_to_song(track: dict, stream_url: str) -> Song:
-    """Convert a ytmusicapi track dict to a Beats Song schema."""
     thumbnails = track.get("thumbnail") or track.get("thumbnails") or []
     artists = track.get("artists") or []
     artist_name = artists[0].get("name", "Unknown") if artists else track.get("artist", "Unknown")
-
     album_data = track.get("album") or {}
     album_name = album_data.get("name", "YouTube Music") if isinstance(album_data, dict) else "YouTube Music"
-
     duration_str = track.get("duration") or track.get("length") or ""
-    duration_sec = _duration_to_seconds(duration_str)
-
     return Song(
         id=track.get("videoId") or str(uuid.uuid4()),
         title=track.get("title") or "Unknown Title",
         artist=artist_name,
         album=album_name,
         artwork=_best_thumbnail(thumbnails),
-        duration=duration_sec,
+        duration=_duration_to_seconds(duration_str),
         url=stream_url,
         lyrics=None,
     )
 
 
-# ── Noise word dedup (still useful for fallback) ──────────────────────────────
+# ── Noise word dedup ──────────────────────────────────────────────────────────
 
 _NOISE = {
     "lofi", "lo-fi", "slowed", "reverb", "remix", "cover", "version",
@@ -191,23 +188,19 @@ async def search_media(
     source: str = Query(default="youtube"),
     limit: int = Query(default=1, ge=1, le=5),
 ):
-    """
-    Search for a song. Returns top result(s).
-    Uses ytmusicapi for YouTube (best metadata), falls back to yt-dlp.
-    SoundCloud always uses yt-dlp.
-    """
-    # SoundCloud path — yt-dlp only
+    """Search YouTube or SoundCloud. Returns top result(s)."""
+
+    # SoundCloud — yt-dlp only
     if source == "soundcloud":
-        results = await _extract(_SEARCH_OPTS, f"scsearch{limit}:{q}")
+        results = await _extract(_search_opts(), f"scsearch{limit}:{q}")
         if not results or not results.get("entries"):
             return []
-        entries = [e for e in results["entries"] if e]
 
         async def _resolve_sc(entry: dict) -> Song | None:
             video_url = entry.get("url") or entry.get("webpage_url", "")
             if not video_url.startswith("http"):
                 return None
-            info = await _extract(_STREAM_OPTS, video_url)
+            info = await _extract(_stream_opts(), video_url)
             if not info or not info.get("url"):
                 return None
             return Song(
@@ -221,45 +214,39 @@ async def search_media(
                 lyrics=None,
             )
 
-        tasks = [_resolve_sc(e) for e in entries[:limit]]
+        tasks = [_resolve_sc(e) for e in (results.get("entries") or [])[:limit] if e]
         resolved = await asyncio.gather(*tasks)
         return [s for s in resolved if s is not None]
 
-    # YouTube path — ytmusicapi search
+    # YouTube — ytmusicapi first, yt-dlp fallback
     ytmusic = get_ytmusic()
     if ytmusic:
         try:
             loop = asyncio.get_event_loop()
-            raw = await loop.run_in_executor(
-                None,
-                lambda: ytmusic.search(q, filter="songs", limit=limit)
-            )
-            if not raw:
-                raise ValueError("empty results")
+            raw = await loop.run_in_executor(None, lambda: ytmusic.search(q, filter="songs", limit=limit))
+            if raw:
+                async def _resolve_ytm(track: dict) -> Song | None:
+                    vid_id = track.get("videoId")
+                    if not vid_id:
+                        return None
+                    stream_url = await _get_stream_url(vid_id)
+                    if not stream_url:
+                        return None
+                    return _ytmusic_track_to_song(track, stream_url)
 
-            async def _resolve_ytm(track: dict) -> Song | None:
-                vid_id = track.get("videoId")
-                if not vid_id:
-                    return None
-                stream_url = await _get_stream_url(vid_id)
-                if not stream_url:
-                    return None
-                return _ytmusic_track_to_song(track, stream_url)
-
-            tasks = [_resolve_ytm(t) for t in raw[:limit]]
-            resolved = await asyncio.gather(*tasks)
-            songs = [s for s in resolved if s is not None]
-            if songs:
-                logger.info(f"[Search] ytmusicapi: {len(songs)} result(s) for '{q}'")
-                return songs
+                tasks = [_resolve_ytm(t) for t in raw[:limit]]
+                resolved = await asyncio.gather(*tasks)
+                songs = [s for s in resolved if s is not None]
+                if songs:
+                    logger.info(f"[Search] ytmusicapi: {len(songs)} result(s) for '{q}'")
+                    return songs
         except Exception as e:
             logger.warning(f"[Search] ytmusicapi failed: {e}, falling back to yt-dlp")
 
     # yt-dlp fallback
-    results = await _extract(_SEARCH_OPTS, f"ytsearch{limit}:{q}")
+    results = await _extract(_search_opts(), f"ytsearch{limit}:{q}")
     if not results or not results.get("entries"):
         return []
-    entries = [e for e in results["entries"] if e]
 
     async def _resolve_ydl(entry: dict) -> Song | None:
         vid_id = entry.get("id")
@@ -279,7 +266,7 @@ async def search_media(
             lyrics=None,
         )
 
-    tasks = [_resolve_ydl(e) for e in entries[:limit]]
+    tasks = [_resolve_ydl(e) for e in (results.get("entries") or [])[:limit] if e]
     resolved = await asyncio.gather(*tasks)
     return [s for s in resolved if s is not None]
 
@@ -289,12 +276,7 @@ async def get_queue(
     video_id: str = Query(...),
     limit: int = Query(default=8, ge=3, le=15),
 ):
-    """
-    Get YouTube Music's real 'Up Next' queue for a song.
-    Uses ytmusicapi.get_watch_playlist() — the exact same algorithm
-    YouTube Music uses when you press play on a track.
-    Falls back to smart search-based queue if ytmusicapi unavailable.
-    """
+    """YouTube Music real 'Up Next' queue via get_watch_playlist."""
     ytmusic = get_ytmusic()
 
     if ytmusic:
@@ -304,12 +286,7 @@ async def get_queue(
                 None,
                 lambda: ytmusic.get_watch_playlist(videoId=video_id, limit=limit + 2)
             )
-
-            tracks = watch.get("tracks", [])
-            # First track is usually the current song — skip it
-            queue_tracks = [t for t in tracks if t.get("videoId") != video_id]
-
-            logger.info(f"[Queue] ytmusicapi watch playlist: {len(queue_tracks)} tracks for {video_id}")
+            tracks = [t for t in watch.get("tracks", []) if t.get("videoId") != video_id]
 
             async def _resolve_queue(track: dict) -> Song | None:
                 vid_id = track.get("videoId")
@@ -320,26 +297,22 @@ async def get_queue(
                     return None
                 return _ytmusic_track_to_song(track, stream_url)
 
-            tasks = [_resolve_queue(t) for t in queue_tracks[:limit]]
+            tasks = [_resolve_queue(t) for t in tracks[:limit]]
             resolved = await asyncio.gather(*tasks)
             songs = [s for s in resolved if s is not None]
-
             if songs:
-                logger.info(f"[Queue] Resolved {len(songs)} songs via ytmusicapi")
+                logger.info(f"[Queue] {len(songs)} songs via ytmusicapi for {video_id}")
                 return songs
-
         except Exception as e:
-            logger.warning(f"[Queue] ytmusicapi failed: {e}, falling back to search strategy")
+            logger.warning(f"[Queue] ytmusicapi failed: {e}, falling back to search")
 
-    # Fallback — search-based queue (yt-dlp only)
-    logger.info(f"[Queue] Using search fallback for {video_id}")
-    meta = await _extract(_SEARCH_OPTS, f"ytsearch1:https://youtube.com/watch?v={video_id}")
+    # Fallback — search-based queue
+    meta = await _extract(_search_opts(), f"ytsearch1:https://youtube.com/watch?v={video_id}")
     title, artist = "", ""
-    if meta and meta.get("entries"):
+    if meta and meta.get("entries") and meta["entries"][0]:
         e = meta["entries"][0]
-        if e:
-            title = e.get("title", "")
-            artist = e.get("uploader", "")
+        title = e.get("title", "")
+        artist = e.get("uploader", "")
 
     if not title:
         return []
@@ -354,7 +327,7 @@ async def get_queue(
     ]
 
     async def _fetch(query: str) -> list[dict]:
-        r = await _extract(_SEARCH_OPTS, query)
+        r = await _extract(_search_opts(), query)
         return [e for e in (r.get("entries") or []) if e] if r else []
 
     all_entries = await asyncio.gather(*[_fetch(q) for q in queries])
@@ -368,11 +341,10 @@ async def get_queue(
             eid = entry.get("id", "")
             if not eid or eid in seen_ids:
                 continue
-            etitle = entry.get("title", "")
-            if _is_duplicate(etitle, seen_cores):
+            if _is_duplicate(entry.get("title", ""), seen_cores):
                 continue
             seen_ids.add(eid)
-            seen_cores.append(_core_title(etitle))
+            seen_cores.append(_core_title(entry.get("title", "")))
             candidates.append(entry)
             if len(candidates) >= limit:
                 break
@@ -403,66 +375,40 @@ async def get_queue(
 
 
 @router.get("/lyrics")
-async def get_lyrics(
-    video_id: str = Query(...),
-):
-    """
-    Fetch song lyrics via ytmusicapi.
-    Returns lines as a list (matches frontend lyrics: string[] type).
-    """
+async def get_lyrics(video_id: str = Query(...)):
+    """Fetch song lyrics via ytmusicapi."""
     ytmusic = get_ytmusic()
     if not ytmusic:
         raise HTTPException(status_code=503, detail="ytmusicapi not available")
-
     try:
         loop = asyncio.get_event_loop()
-
-        # Get watch playlist first to get the lyrics browse ID
-        watch = await loop.run_in_executor(
-            None,
-            lambda: ytmusic.get_watch_playlist(videoId=video_id, limit=1)
-        )
+        watch = await loop.run_in_executor(None, lambda: ytmusic.get_watch_playlist(videoId=video_id, limit=1))
         lyrics_id = watch.get("lyrics")
         if not lyrics_id:
-            raise HTTPException(status_code=404, detail="No lyrics available for this song")
-
-        lyrics_data = await loop.run_in_executor(
-            None,
-            lambda: ytmusic.get_lyrics(lyrics_id)
-        )
+            raise HTTPException(status_code=404, detail="No lyrics available")
+        lyrics_data = await loop.run_in_executor(None, lambda: ytmusic.get_lyrics(lyrics_id))
         raw = lyrics_data.get("lyrics") or ""
         lines = [line for line in raw.split("\n") if line.strip()]
         return {"lyrics": lines, "source": lyrics_data.get("source", "")}
-
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lyrics fetch failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/charts", response_model=list[Song])
 async def get_charts(
-    country: str = Query(default="IN", description="Country code e.g. IN, US, GB"),
+    country: str = Query(default="IN"),
     limit: int = Query(default=6, ge=1, le=20),
 ):
-    """
-    Top charts for a country via ytmusicapi.
-    Used by the Discover page 'Trending Today' section.
-    """
+    """Top charts via ytmusicapi."""
     ytmusic = get_ytmusic()
     if not ytmusic:
-        # Fallback to yt-dlp trending
         return await _ydlp_trending("trending music India 2025", limit)
-
     try:
         loop = asyncio.get_event_loop()
-        charts = await loop.run_in_executor(
-            None,
-            lambda: ytmusic.get_charts(country=country)
-        )
-
+        charts = await loop.run_in_executor(None, lambda: ytmusic.get_charts(country=country))
         tracks = []
-        # Try 'songs' first, then 'videos'
         for section in ["songs", "videos", "trending"]:
             items = charts.get(section, {})
             if isinstance(items, dict):
@@ -470,7 +416,6 @@ async def get_charts(
             if items:
                 tracks = items
                 break
-
         if not tracks:
             return await _ydlp_trending("trending music India 2025", limit)
 
@@ -485,25 +430,15 @@ async def get_charts(
 
         tasks = [_resolve_chart(t) for t in tracks[:limit]]
         resolved = await asyncio.gather(*tasks)
-        songs = [s for s in resolved if s is not None]
-        logger.info(f"[Charts] {len(songs)} chart songs for country={country}")
-        return songs
-
+        return [s for s in resolved if s is not None]
     except Exception as e:
-        logger.warning(f"[Charts] ytmusicapi failed: {e}")
+        logger.warning(f"[Charts] failed: {e}")
         return await _ydlp_trending("trending music India 2025", limit)
 
 
 @router.get("/trending", response_model=list[Song])
-async def trending_searches(
-    mood: Optional[str] = Query(default=None),
-):
-    """
-    Mood-mapped trending songs for the Home page.
-    Uses ytmusicapi mood playlists when available.
-    """
-    ytmusic = get_ytmusic()
-
+async def trending_searches(mood: Optional[str] = Query(default=None)):
+    """Mood-mapped trending songs for Home page."""
     mood_queries = {
         "Happy":   "happy feel good songs 2025",
         "Chill":   "chill lo-fi beats study",
@@ -516,13 +451,11 @@ async def trending_searches(
     }
     query = mood_queries.get(mood or "Chill", "trending music 2025")
 
+    ytmusic = get_ytmusic()
     if ytmusic and mood:
         try:
             loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                lambda: ytmusic.search(query, filter="songs", limit=6)
-            )
+            results = await loop.run_in_executor(None, lambda: ytmusic.search(query, filter="songs", limit=6))
             if results:
                 async def _resolve(track: dict) -> Song | None:
                     vid_id = track.get("videoId")
@@ -532,7 +465,6 @@ async def trending_searches(
                     if not stream_url:
                         return None
                     return _ytmusic_track_to_song(track, stream_url)
-
                 tasks = [_resolve(t) for t in results[:6]]
                 resolved = await asyncio.gather(*tasks)
                 songs = [s for s in resolved if s is not None]
@@ -545,12 +477,10 @@ async def trending_searches(
 
 
 async def _ydlp_trending(query: str, limit: int) -> list[Song]:
-    """yt-dlp fallback for trending."""
-    results = await _extract(_SEARCH_OPTS, f"ytsearch{limit}:{query}")
+    results = await _extract(_search_opts(), f"ytsearch{limit}:{query}")
     if not results or not results.get("entries"):
         return []
     entries = [e for e in results["entries"] if e]
-
     seen_cores: list[str] = []
     clean = []
     for entry in entries:
@@ -587,14 +517,12 @@ async def refresh_stream_url(
     video_id: str = Query(...),
     source: str = Query(default="youtube"),
 ):
-    """Refresh an expired stream URL."""
+    """Refresh expired stream URL."""
     if source == "soundcloud":
-        info = await _extract(_STREAM_OPTS, video_id)
+        info = await _extract(_stream_opts(), video_id)
         url = info.get("url") if info else None
     else:
         url = await _get_stream_url(video_id)
-
     if not url:
         raise HTTPException(status_code=404, detail="Could not extract stream URL")
-
     return {"video_id": video_id, "url": url, "source": source}
