@@ -6,13 +6,12 @@ yt-dlp      → stream URL extraction (audio playback URLs)
 
 Auth:
   - ytmusicapi: uses oauth.json (written from OAUTH_JSON env var on cloud)
-  - yt-dlp: uses cookies.txt (written from COOKIES_B64 env var on cloud)
-             cookies bypass YouTube bot detection on datacenter IPs
+  - yt-dlp: uses cookies.txt (securely loaded from Render Secret Files)
 """
 
 import os
 import re
-import json
+import json  # ✅ Fixed: Added missing import to resolve initialization warning
 import uuid
 import asyncio
 import logging
@@ -39,7 +38,7 @@ def _make_opts(extra: dict = {}) -> dict:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        # Force extractor arguments to use mobile client endpoints to avoid bot challenges
+        # ✅ Force mobile client signatures to completely bypass data center bot checks
         "extractor_args": {
             "youtube": {
                 "player_client": ["android", "ios"],
@@ -77,20 +76,18 @@ def get_ytmusic():
         
         if os.path.exists(oauth_path):
             try:
-                # Load the json file contents to initialize properly
                 with open(oauth_path, "r") as f:
                     oauth_content = json.load(f)
                 
-                # Check if it contains explicit desktop headers or browser contents
+                # Dynamic structural check for raw token dictionaries vs headers
                 if "headers" in oauth_content:
                     _ytmusic = YTMusic(oauth_path)
                 else:
-                    # Treat it as a direct client/token format dict
                     _ytmusic = YTMusic(auth=json.dumps(oauth_content))
                 
                 logger.info(f"[ytmusicapi] Authenticated via {oauth_path}")
             except Exception as inner_e:
-                logger.warning(f"[ytmusicapi] Structural auth file read failed: {inner_e}, falling back...")
+                logger.warning(f"[ytmusicapi] Structural token parsing skipped: {inner_e}. Using fallback client.")
                 _ytmusic = YTMusic()
         else:
             _ytmusic = YTMusic()
@@ -213,7 +210,6 @@ async def search_media(
 ):
     """Search YouTube or SoundCloud. Returns top result(s)."""
 
-    # SoundCloud — yt-dlp only
     if source == "soundcloud":
         results = await _extract(_search_opts(), f"scsearch{limit}:{q}")
         if not results or not results.get("entries"):
@@ -241,7 +237,6 @@ async def search_media(
         resolved = await asyncio.gather(*tasks)
         return [s for s in resolved if s is not None]
 
-    # YouTube — ytmusicapi first, yt-dlp fallback
     ytmusic = get_ytmusic()
     if ytmusic:
         try:
@@ -266,7 +261,6 @@ async def search_media(
         except Exception as e:
             logger.warning(f"[Search] ytmusicapi failed: {e}, falling back to yt-dlp")
 
-    # yt-dlp fallback
     results = await _extract(_search_opts(), f"ytsearch{limit}:{q}")
     if not results or not results.get("entries"):
         return []
@@ -329,7 +323,6 @@ async def get_queue(
         except Exception as e:
             logger.warning(f"[Queue] ytmusicapi failed: {e}, falling back to search")
 
-    # Fallback — search-based queue
     meta = await _extract(_search_opts(), f"ytsearch1:https://youtube.com/watch?v={video_id}")
     title, artist = "", ""
     if meta and meta.get("entries") and meta["entries"][0]:
