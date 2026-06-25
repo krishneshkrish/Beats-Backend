@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     OAUTH_JSON: str = ""          # full oauth.json content as env var (cloud)
 
     YT_COOKIES_PATH: str = "./cookies.txt"
-    COOKIES_B64: str = ""         # base64 encoded cookies.txt (cloud)
+    COOKIES_B64: str = ""         # base64 encoded cookies.txt (legacy / fallback)
 
     @property
     def origins_list(self) -> List[str]:
@@ -47,8 +47,8 @@ def get_settings() -> Settings:
 
 def setup_oauth_file() -> None:
     """
-    Writes oauth.json and cookies.txt from env vars on cloud startup.
-    Locally these files already exist — function skips silently.
+    Writes oauth.json and verifies cookies.txt on cloud startup.
+    Locally or via Render Secret Files, these files are loaded directly.
     """
     settings = get_settings()
 
@@ -71,17 +71,22 @@ def setup_oauth_file() -> None:
         logger.warning("⚠️  No oauth.json — ytmusicapi running unauthenticated")
 
     # ── cookies.txt ───────────────────────────────────────────────────────────
-    if settings.COOKIES_B64 and settings.COOKIES_B64.strip():
+    path = settings.YT_COOKIES_PATH
+    
+    # Priority 1: Check if Render loaded it natively via Secret Files
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        logger.info(f"✅ cookies.txt securely loaded at {path}")
+        
+    # Priority 2: Fallback to base64 variable only if file is missing
+    elif settings.COOKIES_B64 and settings.COOKIES_B64.strip():
         try:
-            path = settings.YT_COOKIES_PATH
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             decoded = base64.b64decode(settings.COOKIES_B64)
             with open(path, "wb") as f:
                 f.write(decoded)
             logger.info(f"✅ cookies.txt written from COOKIES_B64 env var → {path}")
         except Exception as e:
-            logger.error(f"❌ Failed to write cookies.txt: {e}")
-    elif os.path.exists(settings.YT_COOKIES_PATH):
-        logger.info(f"✅ cookies.txt found at {settings.YT_COOKIES_PATH}")
+            logger.error(f"❌ Failed to write cookies.txt from base64 string: {e}")
+            
     else:
-        logger.warning("⚠️  No cookies.txt — yt-dlp running without auth (bot detection risk on cloud)")
+        logger.warning("⚠️  No cookies.txt found — yt-dlp running without auth (bot detection risk on cloud)")
