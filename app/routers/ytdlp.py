@@ -34,11 +34,18 @@ COOKIES_PATH = settings.YT_COOKIES_PATH
 # ── yt-dlp option builder ─────────────────────────────────────────────────────
 
 def _make_opts(extra: dict = {}) -> dict:
-    """Build yt-dlp opts, injecting cookies if available."""
+    """Build yt-dlp opts, injecting cookies and forcing bot-bypass clients."""
     opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
+        # Force extractor arguments to use mobile client endpoints to avoid bot challenges
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"],
+                "skip": ["webpage"]
+            }
+        },
         **extra,
     }
     if os.path.exists(COOKIES_PATH):
