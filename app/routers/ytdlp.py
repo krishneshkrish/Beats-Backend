@@ -199,8 +199,10 @@ async def search_media(
 ):
     """Search YouTube or SoundCloud. Returns top result(s)."""
 
+    # SoundCloud — yt-dlp only
     if source == "soundcloud":
-        results = await _extract(_search_opts(), f"scsearch{limit}:{q}")
+        # ✅ Fix: Tell the option builder NOT to send YouTube cookies to SoundCloud
+        results = await _extract(_search_opts(is_youtube=False), f"scsearch{limit}:{q}")
         if not results or not results.get("entries"):
             return []
 
@@ -208,7 +210,8 @@ async def search_media(
             video_url = entry.get("url") or entry.get("webpage_url", "")
             if not video_url.startswith("http"):
                 return None
-            info = await _extract(_stream_opts(), video_url)
+            # ✅ Fix: Tell the stream option builder NOT to send YouTube cookies to SoundCloud
+            info = await _extract(_stream_opts(is_youtube=False), video_url)
             if not info or not info.get("url"):
                 return None
             return Song(
