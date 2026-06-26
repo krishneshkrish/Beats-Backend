@@ -14,6 +14,7 @@ import re
 import json
 import uuid
 import asyncio
+import httpx
 import logging
 from functools import partial
 from typing import Optional
@@ -112,17 +113,36 @@ async def _extract(opts: dict, url: str) -> dict | None:
 
 
 async def _get_stream_url(video_id: str) -> str | None:
-    url = f"https://youtube.com/watch?v={video_id}"
-    info = await _extract(_stream_opts(), url)
-    if not info:
-        return None
-    if info.get("url"):
-        return info["url"]
-    formats = info.get("formats") or []
-    audio = [f for f in formats if f.get("acodec") != "none" and f.get("url")]
-    if audio:
-        audio.sort(key=lambda f: f.get("abr") or 0, reverse=True)
-        return audio[0]["url"]
+    """
+    Bypasses Render data center IP blocks completely by fetching direct 
+    audio streams from distributed open-source pipeline instances.
+    """
+    # Reliable public Piped API instances that handle high-volume distributed streaming
+    public_instances = [
+        f"https://pipedapi.kavin.rocks/streams/{video_id}",
+        f"https://pipedapi.tokyo.privacy.com.de/streams/{video_id}",
+        f"https://api.piped.projectsegfau.lt/streams/{video_id}"
+    ]
+    
+    # Use standard httpx client instead of launching heavy yt-dlp processes
+    async with httpx.AsyncClient(timeout=4.0) as client:
+        for url in public_instances:
+            try:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    audio_streams = data.get("audioStreams", [])
+                    if audio_streams:
+                        # Sort by quality bitrate descending to get the best audio link
+                        audio_streams.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                        stream_url = audio_streams[0].get("url")
+                        if stream_url:
+                            logger.info(f"✅ Proxied stream URL successfully for video: {video_id}")
+                            return stream_url
+            except Exception as e:
+                logger.warning(f"Fallback instance failed ({url}): {e}")
+                continue  # Silently drop to the next instance if one is down
+                
     return None
 
 
