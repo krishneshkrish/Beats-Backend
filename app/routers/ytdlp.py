@@ -114,38 +114,10 @@ async def _extract(opts: dict, url: str) -> dict | None:
 
 async def _get_stream_url(video_id: str) -> str | None:
     """
-    Bypasses Render data center IP blocks completely by fetching direct 
-    audio streams from distributed open-source pipeline instances.
+    Instantly returns the standard YouTube watch URL to the frontend.
+    Eliminates backend data center blocks, scraping delays, and proxy down-time.
     """
-    # Reliable public Piped API instances that handle high-volume distributed streaming
-    public_instances = [
-        f"https://pipedapi.kavin.rocks/streams/{video_id}",
-        f"https://pipedapi.tokyo.privacy.com.de/streams/{video_id}",
-        f"https://api.piped.projectsegfau.lt/streams/{video_id}"
-    ]
-    
-    # Use standard httpx client instead of launching heavy yt-dlp processes
-    async with httpx.AsyncClient(timeout=4.0) as client:
-        for url in public_instances:
-            try:
-                response = await client.get(url)
-                if response.status_code == 200:
-                    data = response.json()
-                    audio_streams = data.get("audioStreams", [])
-                    if audio_streams:
-                        # Sort by quality bitrate descending to get the best audio link
-                        audio_streams.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
-                        stream_url = audio_streams[0].get("url")
-                        if stream_url:
-                            logger.info(f"✅ Proxied stream URL successfully for video: {video_id}")
-                            return stream_url
-            except Exception as e:
-                logger.warning(f"Fallback instance failed ({url}): {e}")
-                continue  # Silently drop to the next instance if one is down
-                
-    return None
-
-
+    return f"https://www.youtube.com/watch?v={video_id}"
 def _best_thumbnail(thumbnails) -> str:
     if not thumbnails:
         return ""
