@@ -30,63 +30,18 @@ settings = get_settings()
 COOKIES_PATH = settings.YT_COOKIES_PATH
 
 
-# ── Programmatic Cookie Format Repairer ───────────────────────────────────────
-
-def _repair_cookies():
-    """
-    Render's UI text area converts tabs to spaces, breaking the Netscape format.
-    This function programmatically converts spaces back to true tabs at runtime.
-    """
-    if not os.path.exists(COOKIES_PATH):
-        return
-    try:
-        with open(COOKIES_PATH, "r") as f:
-            lines = f.readlines()
-        
-        repaired_lines = []
-        for line in lines:
-            # Keep comments and empty lines exactly as they are
-            if line.startswith("#") or not line.strip():
-                repaired_lines.append(line)
-                continue
-            
-            # Split by whitespace columns
-            parts = line.split()
-            if len(parts) >= 7:
-                domain = parts[0]
-                include_subdomains = parts[1]
-                path = parts[2]
-                secure = parts[3]
-                expiry = parts[4]
-                name = parts[5]
-                value = " ".join(parts[6:])
-                # Reconstruct using strict escaped tab characters
-                repaired_lines.append(f"{domain}\t{include_subdomains}\t{path}\t{secure}\t{expiry}\t{name}\t{value}\n")
-            else:
-                repaired_lines.append(line)
-        
-        with open(COOKIES_PATH, "w") as f:
-            f.writelines(repaired_lines)
-        logger.info("🔧 Successfully repaired cookies.txt format (converted spaces back to strict tabs)")
-    except Exception as e:
-        logger.warning(f"⚠️ Cookie auto-repair failed: {e}")
-
-
 # ── yt-dlp option builder ─────────────────────────────────────────────────────
 
 def _make_opts(extra: dict = {}) -> dict:
-    """Build yt-dlp opts, ensuring cookies are formatted and mobile clients are forced."""
-    # Auto-sanitize the cookies format before yt-dlp instantiates
-    _repair_cookies()
-    
+    """Build yt-dlp options using web clients that natively process browser session cookies."""
     opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
+        # Allow web-based clients that natively parse and accept browser cookies
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios"],
-                "skip": ["webpage", "configs"]
+                "player_client": ["web", "mweb"],
             }
         },
         **extra,
