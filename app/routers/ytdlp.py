@@ -5,7 +5,9 @@ ytmusicapi  → Handles high-speed metadata search, charts, and native queues.
 Client-Side → Bypasses server datacenter locks by returning direct player handles.
 """
 
+import os  # ✅ Fixed: Added missing import statement
 import re
+import json
 import uuid
 import asyncio
 import logging
@@ -29,7 +31,6 @@ def get_ytmusic():
         return _ytmusic
     try:
         from ytmusicapi import YTMusic
-        import json
         oauth_path = settings.YTMUSIC_OAUTH_PATH
         
         if os.path.exists(oauth_path):
@@ -112,6 +113,10 @@ async def search_media(
     limit: int = Query(default=1, ge=1, le=5),
 ):
     """Production Search Router: Instantly runs metadata calls with zero server overhead."""
+    if source == "soundcloud":
+        # Gracefully handle soundcloud source searches now that yt-dlp is dropped
+        return []
+
     ytmusic = get_ytmusic()
     if not ytmusic:
         raise HTTPException(status_code=503, detail="Search platform catalog unavailable")
@@ -177,6 +182,71 @@ async def get_lyrics(video_id: str = Query(...)):
         return {"lyrics": [line for line in (lyrics_data.get("lyrics") or "").split("\n") if line.strip()], "source": lyrics_data.get("source", "")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/trending", response_model=list[Song])
+async def trending_searches(mood: Optional[str] = Query(default=None)):
+    """✅ Fixed: Added trending endpoints to prevent frontend 404s"""
+    mood_queries = {
+        "Happy":   "happy feel good songs 2026",
+        "Chill":   "chill lo-fi beats study",
+        "Focus":   "focus deep work music",
+        "Workout": "phonk gym motivation 2026",
+        "Night":   "late night r&b slow songs",
+        "Sad":     "sad emotional songs hindi",
+        "Party":   "party hits dance 2026",
+        "Travel":  "road trip songs feel good",
+    }
+    query = mood_queries.get(mood or "Chill", "trending music 2026")
+    ytmusic = get_ytmusic()
+    if not ytmusic:
+        return []
+    try:
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, lambda: ytmusic.search(query, filter="songs", limit=6))
+        songs = []
+        if results:
+            for track in results[:6]:
+                vid_id = track.get("videoId")
+                if vid_id:
+                    stream_link = await _get_stream_url(vid_id)
+                    songs.append(_ytmusic_track_to_song(track, stream_link))
+        return songs
+    except Exception as e:
+        logger.warning(f"[Trending] failed: {e}")
+        return []
+
+
+@router.get("/charts", response_model=list[Song])
+async def get_charts(
+    country: str = Query(default="IN"),
+    limit: int = Query(default=6, ge=1, le=20),
+):
+    """✅ Fixed: Added charts fallback handling to prevent router 404s"""
+    ytmusic = get_ytmusic()
+    if not ytmusic:
+        return []
+    try:
+        loop = asyncio.get_event_loop()
+        charts = await loop.run_in_executor(None, lambda: ytmusic.get_charts(country=country))
+        tracks = []
+        for section in ["songs", "videos", "trending"]:
+            items = charts.get(section, {})
+            if isinstance(items, dict):
+                items = items.get("items", [])
+            if items:
+                tracks = items
+                break
+        songs = []
+        for track in tracks[:limit]:
+            vid_id = track.get("videoId")
+            if vid_id:
+                stream_link = await _get_stream_url(vid_id)
+                songs.append(_ytmusic_track_to_song(track, stream_link))
+        return songs
+    except Exception as e:
+        logger.warning(f"[Charts] failed: {e}")
+        return []
 
 
 @router.get("/refresh")
