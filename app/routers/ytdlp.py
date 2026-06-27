@@ -33,33 +33,36 @@ COOKIES_PATH = settings.YT_COOKIES_PATH
 
 # ── yt-dlp option builder ─────────────────────────────────────────────────────
 
-def _make_opts(extra: dict = {}) -> dict:
-    """Build yt-dlp options using web clients that natively process browser session cookies."""
+def _make_opts(extra: dict = {}, is_youtube: bool = True) -> dict:
+    """Build yt-dlp options, isolating YouTube cookies to YouTube requests only."""
     opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        # Allow web-based clients that natively parse and accept browser cookies
-        "extractor_args": {
+        **extra,
+    }
+    
+    if is_youtube:
+        opts["extractor_args"] = {
             "youtube": {
                 "player_client": ["web", "mweb"],
             }
-        },
-        **extra,
-    }
-    if os.path.exists(COOKIES_PATH):
-        opts["cookiefile"] = COOKIES_PATH
+        }
+        if os.path.exists(COOKIES_PATH):
+            opts["cookiefile"] = COOKIES_PATH
+            
     return opts
 
 
-def _search_opts() -> dict:
-    return _make_opts({"extract_flat": True})
+# ✅ Ensure these definitions accept the is_youtube keyword argument!
+def _search_opts(is_youtube: bool = True) -> dict:
+    return _make_opts({"extract_flat": True}, is_youtube=is_youtube)
 
 
-def _stream_opts() -> dict:
+def _stream_opts(is_youtube: bool = True) -> dict:
     return _make_opts({
         "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
-    })
+    }, is_youtube=is_youtube)
 
 
 # ── ytmusicapi client (lazy init) ─────────────────────────────────────────────
