@@ -26,11 +26,18 @@ class GreetingResponse(BaseModel):
 # ── Play Log ──────────────────────────────────────────────────────────────────
 
 class PlayLogPayload(BaseModel):
-    username: str = "default_user"  # ✅ Added profile property field
+    username: str = "default_user"
     song_id: str
     mood_tag: str
     timestamp: str          # ISO string from frontend
     session_id: str
+    # ✅ Added optional metadata fields to pass raw search payloads down to the DB catalog
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    artwork: Optional[str] = None
+    duration: Optional[int] = None
+    url: Optional[str] = None
 
 
 class PlayLogResponse(BaseModel):
@@ -118,7 +125,7 @@ class SearchResult(BaseModel):
 # ── ML / Recommendation internals ────────────────────────────────────────────
 
 class RecommendationContext(BaseModel):
-    username: Optional[str] = "default_user" # ✅ Added model matrix user filter
+    username: Optional[str] = "default_user"
     mood: Optional[str] = None
     hour: Optional[int] = None
     session_id: Optional[str] = None

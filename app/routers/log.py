@@ -1,9 +1,8 @@
 """
-Beats — Play Logging & History Router
-─────────────────────────────────────
-Captures track playback telemetry events from the frontend,
-enriches them with server-side time dimensions, and provides
-history retrieval routes to sync data profiles across screens.
+Beats — Play Logging & Dynamic Catalog Hydration Router
+────────────────────────────────────────────────────────
+Captures track playback telemetries, dynamically caches new
+external streaming catalog parameters, and serves fleet timeline syncs.
 """
 
 import json
@@ -26,16 +25,39 @@ async def log_play_event(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Logs an active playback event under a specific user profile context.
-    Enriches temporal features (hour, day of week) for the ML model matrix.
+    Logs track execution events under user profiles.
+    Dynamically caches missing stream properties directly into the Catalog table.
     """
     try:
+        # 1. Safe date parsing for temporal ML tracking arrays
         try:
             clean_ts = payload.timestamp.replace("Z", "+00:00")
             dt = datetime.fromisoformat(clean_ts)
         except Exception:
             dt = datetime.utcnow()
 
+        # 2. Dynamic Catalog Cache Check
+        catalog_check = await db.execute(select(SongCatalog).where(SongCatalog.id == payload.song_id))
+        existing_song = catalog_check.scalar_one_or_none()
+
+        if not existing_song and payload.title:
+            logger.info(f"[Catalog Cache] Caching new track definition to DB: {payload.title} ({payload.song_id})")
+            new_catalog_entry = SongCatalog(
+                id=payload.song_id,
+                title=payload.title,
+                artist=payload.artist or "Unknown Artist",
+                album=payload.album or "YouTube Stream",
+                artwork=payload.artwork or "",
+                duration=payload.duration or 0,
+                url=payload.url or "",
+                lyrics=json.dumps([]),
+                genre="Unknown",
+                mood_tags=json.dumps([payload.mood_tag])
+            )
+            db.add(new_catalog_entry)
+            await db.flush()  # Flushes buffer state to ensure ID presence for dependencies
+
+        # 3. Create the user-scoped play event logging record
         new_event = PlayEvent(
             username=payload.username,
             song_id=payload.song_id,
@@ -54,6 +76,7 @@ async def log_play_event(
         return PlayLogResponse(status="success")
 
     except Exception as e:
+        await db.rollback()
         logger.error(f"[Logger Error] Failed to write event to database: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -69,20 +92,17 @@ async def get_user_history(
 ):
     """
     Retrieves the unique recently played track history for a specific username context.
-    Resolves track metadata against the SongCatalog to populate the frontend layout on reload.
     """
     try:
-        # Fetch recent events for this specific user profile
         stmt = (
             select(PlayEvent)
             .where(PlayEvent.username == username)
             .order_by(PlayEvent.created_at.desc())
-            .limit(limit * 3)  # Pull extra rows to filter out duplicate plays cleanly in Python
+            .limit(limit * 3)
         )
         result = await db.execute(stmt)
         events = result.scalars().all()
 
-        # Extract unique song IDs while preserving the exact chronological sequence
         seen_songs = set()
         unique_song_ids = []
         for e in events:
@@ -95,13 +115,11 @@ async def get_user_history(
         if not unique_song_ids:
             return []
 
-        # Hydrate full metadata details from the catalog store
         catalog_stmt = select(SongCatalog).where(SongCatalog.id.in_(unique_song_ids))
         catalog_result = await db.execute(catalog_stmt)
         rows = catalog_result.scalars().all()
         id_to_row = {r.id: r for r in rows}
 
-        # Map rows back to standard schemas matching the chronological timeline sequence
         songs = []
         for sid in unique_song_ids:
             row = id_to_row.get(sid)
