@@ -29,7 +29,7 @@ from app.core.config import get_settings
 logger = logging.getLogger("beats.ml")
 settings = get_settings()
 
-MIN_EVENTS_FOR_ML = 50   # switch to ML model after this many play events per user
+MIN_EVENTS_FOR_ML = 2   # switch to ML model after this many play events per user
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
