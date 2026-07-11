@@ -1,79 +1,61 @@
 """
-Play logging router.
-Every song play from the frontend hits POST /api/log/play.
-This is the most important data collection endpoint —
-every row here becomes a training sample for the ML model.
+Beats — Play Logging Router
+───────────────────────────
+Captures track playback telemetry events from the frontend,
+enriches them with server-side time dimensions, and records
+them persistently under the active username profile context.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
+import logging
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db, PlayEvent, UserSession
+from app.db.database import get_db, PlayEvent
 from app.models.schemas import PlayLogPayload, PlayLogResponse
 
-router = APIRouter(prefix="/api/log", tags=["logging"])
+logger = logging.getLogger("beats.log")
+router = APIRouter(prefix="/api/log", tags=["log"])
 
-
-@router.post("/play", response_model=PlayLogResponse)
-async def log_play(payload: PlayLogPayload, db: AsyncSession = Depends(get_db)):
+@router.post("", response_model=PlayLogResponse)
+async def log_play_event(
+    payload: PlayLogPayload,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Called by usePlayerStore every time a track starts playing.
-
-    Payload (from frontend):
-      song_id    — song identifier
-      mood_tag   — active mood at time of play (from useMoodStore)
-      timestamp  — ISO string from frontend
-      session_id — browser session ID (random per tab)
-
-    Server enriches with:
-      hour_of_day  — for time-of-day ML features
-      day_of_week  — for weekly pattern ML features
+    Logs an active playback event under a specific user profile context.
+    Enriches temporal features (hour, day of week) for the ML model matrix.
     """
     try:
-        now = datetime.utcnow()
-
-        # Parse frontend timestamp for hour/dow features
+        # Parse frontend timestamp safely to calculate temporal ML vectors
         try:
-            ts = datetime.fromisoformat(payload.timestamp.replace("Z", "+00:00"))
-            hour = ts.hour
-            dow = ts.weekday()
+            # Handle standard Javascript ISO strings (e.g., trailing 'Z')
+            clean_ts = payload.timestamp.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_ts)
         except Exception:
-            hour = now.hour
-            dow = now.weekday()
+            dt = datetime.utcnow()
 
-        # Write play event
-        event = PlayEvent(
+        # Build the user-scoped database record
+        new_event = PlayEvent(
+            username=payload.username,
             song_id=payload.song_id,
             mood_tag=payload.mood_tag,
             session_id=payload.session_id,
             timestamp=payload.timestamp,
-            hour_of_day=hour,
-            day_of_week=dow,
+            hour_of_day=dt.hour,
+            day_of_week=dt.weekday(),  # 0 = Monday, 6 = Sunday
         )
-        db.add(event)
 
-        # Upsert session
-        from sqlalchemy import select
-        result = await db.execute(
-            select(UserSession).where(UserSession.id == payload.session_id)
-        )
-        session = result.scalars().first()
-        if session:
-            session.last_active = now
-            session.songs_played += 1
-        else:
-            db.add(UserSession(
-                id=payload.session_id,
-                started_at=now,
-                last_active=now,
-                mood_at_start=payload.mood_tag,
-                songs_played=1,
-            ))
-
+        db.add(new_event)
         await db.commit()
+        await db.refresh(new_event)
+
+        logger.info(f"[Logger] Logged play event for user '{payload.username}' -> Song ID: {payload.song_id}")
         return PlayLogResponse(status="success")
 
     except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"[Logger Error] Failed to write event to database: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database logging failure: {str(e)}"
+        )

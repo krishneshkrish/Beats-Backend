@@ -26,6 +26,7 @@ class GreetingResponse(BaseModel):
 # ── Play Log ──────────────────────────────────────────────────────────────────
 
 class PlayLogPayload(BaseModel):
+    username: str = "default_user"  # ✅ Added profile property field
     song_id: str
     mood_tag: str
     timestamp: str          # ISO string from frontend
@@ -117,6 +118,7 @@ class SearchResult(BaseModel):
 # ── ML / Recommendation internals ────────────────────────────────────────────
 
 class RecommendationContext(BaseModel):
+    username: Optional[str] = "default_user" # ✅ Added model matrix user filter
     mood: Optional[str] = None
     hour: Optional[int] = None
     session_id: Optional[str] = None

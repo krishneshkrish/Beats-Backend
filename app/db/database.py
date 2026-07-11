@@ -1,9 +1,3 @@
-"""
-Database layer — SQLAlchemy async + SQLite (aiosqlite).
-All play events, mood logs, and session data land here.
-This is the raw material for your ML model training.
-"""
-
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import String, Integer, Float, Boolean, Text, DateTime
@@ -41,6 +35,7 @@ class PlayEvent(Base):
     __tablename__ = "play_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), default="default_user", index=True) # ✅ Added user scoping
     song_id: Mapped[str] = mapped_column(String(64))
     mood_tag: Mapped[str] = mapped_column(String(32))
     session_id: Mapped[str] = mapped_column(String(64))
@@ -64,6 +59,7 @@ class MoodLog(Base):
     __tablename__ = "mood_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), default="default_user", index=True) # ✅ Added user scoping
     mood: Mapped[str] = mapped_column(String(32))
     timestamp: Mapped[str] = mapped_column(String(32))
     hour_of_day: Mapped[int] = mapped_column(Integer)
