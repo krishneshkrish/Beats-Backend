@@ -4,11 +4,8 @@ Beats Recommendation Engine
 Phase 1 (active now):  Rule-based mood + time-of-day filtering.
 Phase 2 (kicks in):    Random Forest trained on your real play events.
 
-The engine auto-detects which phase to use based on how many play
-events you have in the DB. < MIN_EVENTS → rule-based; >= MIN_EVENTS → ML.
-
-This is intentional — it gives you real training data before the model
-runs, which is exactly the right ML engineering approach.
+Upgraded to support multi-user profile separation. The engine isolates 
+training data and classification matrices per username context.
 """
 
 import os
@@ -32,7 +29,7 @@ from app.core.config import get_settings
 logger = logging.getLogger("beats.ml")
 settings = get_settings()
 
-MIN_EVENTS_FOR_ML = 50   # switch to ML model after this many play events
+MIN_EVENTS_FOR_ML = 50   # switch to ML model after this many play events per user
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -68,16 +65,11 @@ def rule_based_recommend(
     hour: int,
     limit: int = 10
 ) -> list[Song]:
-    """
-    Pure logic — no training needed.
-    Priority: mood tag → time-of-day fallback → shuffle all.
-    """
     candidate_ids: list[str] = []
 
     if mood and mood in MOOD_SONG_MAP:
         candidate_ids = MOOD_SONG_MAP[mood].copy()
 
-    # Time-of-day boost — add time-appropriate songs even if mood is set
     time_mood_map = {
         "Morning Sessions": "Happy",
         "Afternoon Focus":  "Focus",
@@ -87,12 +79,10 @@ def rule_based_recommend(
     time_mood = time_mood_map[_time_label(hour)]
     time_ids = MOOD_SONG_MAP.get(time_mood, [])
 
-    # Merge without duplicates, keep mood-tagged first
     for sid in time_ids:
         if sid not in candidate_ids:
             candidate_ids.append(sid)
 
-    # Fallback to everything
     if not candidate_ids:
         candidate_ids = [s.id for s in MOCK_SONGS]
 
@@ -105,21 +95,8 @@ def rule_based_recommend(
 
 class MLRecommender:
     """
-    Random Forest classifier trained on your real play history.
-
-    Features used per play event:
-      - hour_of_day        (0–23)
-      - day_of_week        (0–6)
-      - mood_encoded       (label encoded)
-      - song_energy        (Librosa feature, if extracted)
-      - song_valence       (Librosa feature, if extracted)
-      - was_skipped        (negative signal)
-      - was_replayed       (strong positive signal)
-
-    Target: song_id (which song to play next)
-
-    Training is triggered manually via POST /api/ml/train.
-    Model is saved to disk and loaded on next startup.
+    Random Forest classifier isolated per user profile.
+    Tracks distinct matrix sets inside a global pickle file dictionary.
     """
 
     MOOD_ENCODING = {
@@ -128,8 +105,8 @@ class MLRecommender:
     }
 
     def __init__(self):
-        self.model = None
-        self.song_ids: list[str] = []
+        self.models: dict = {}         # Keyed by username -> RandomForestClassifier
+        self.song_ids_map: dict = {}    # Keyed by username -> list of song IDs
         self._load_model()
 
     def _load_model(self):
@@ -137,38 +114,43 @@ class MLRecommender:
             try:
                 with open(settings.MODEL_PATH, "rb") as f:
                     payload = pickle.load(f)
-                    self.model = payload["model"]
-                    self.song_ids = payload["song_ids"]
-                    logger.info(f"[ML] Loaded model from {settings.MODEL_PATH}")
+                    # Graceful fallback handler for legacy single-user models
+                    if "model" in payload and "song_ids" in payload:
+                        self.models = {"default_user": payload["model"]}
+                        self.song_ids_map = {"default_user": payload["song_ids"]}
+                    else:
+                        self.models = payload.get("models", {})
+                        self.song_ids_map = payload.get("song_ids_map", {})
+                    logger.info(f"[ML] Loaded models for profile contexts: {list(self.models.keys())}")
             except Exception as e:
-                logger.warning(f"[ML] Could not load model: {e}")
+                logger.warning(f"[ML] Could not parse matrix load configuration: {e}")
 
     def _save_model(self):
         os.makedirs(os.path.dirname(settings.MODEL_PATH), exist_ok=True)
         with open(settings.MODEL_PATH, "wb") as f:
-            pickle.dump({"model": self.model, "song_ids": self.song_ids}, f)
-        logger.info(f"[ML] Model saved to {settings.MODEL_PATH}")
+            pickle.dump({"models": self.models, "song_ids_map": self.song_ids_map}, f)
+        logger.info(f"[ML] Scoped profile matrices saved safely to disk.")
 
     def _encode_mood(self, mood: str) -> int:
-        return self.MOOD_ENCODING.get(mood, 1)  # default Chill
+        return self.MOOD_ENCODING.get(mood, 1)
 
-    async def train(self, db: AsyncSession) -> dict:
+    async def train(self, db: AsyncSession, username: str = "default_user") -> dict:
         """
-        Pull all play events from DB, build feature matrix, train RF classifier.
-        Returns training report dict.
+        Gathers telemetry rows bounded strictly by active username to train a unique RF grid.
         """
         from sklearn.ensemble import RandomForestClassifier
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import accuracy_score
         from sklearn.preprocessing import LabelEncoder
 
-        result = await db.execute(select(PlayEvent))
+        # Fetch tracking rows isolating target user profile context
+        result = await db.execute(select(PlayEvent).where(PlayEvent.username == username))
         events = result.scalars().all()
 
         if len(events) < MIN_EVENTS_FOR_ML:
             return {
                 "status": "skipped",
-                "reason": f"Need {MIN_EVENTS_FOR_ML} events, have {len(events)}",
+                "reason": f"Profile '{username}' requires {MIN_EVENTS_FOR_ML} data interactions, currently has {len(events)}",
                 "events": len(events),
             }
 
@@ -181,7 +163,6 @@ class MLRecommender:
             "replayed":    int(e.was_replayed),
         } for e in events])
 
-        # Weight: replayed = strong positive, skipped = negative
         df["weight"] = df.apply(
             lambda r: 2.0 if r["replayed"] else (0.3 if r["skipped"] else 1.0),
             axis=1
@@ -189,7 +170,7 @@ class MLRecommender:
 
         le = LabelEncoder()
         df["song_label"] = le.fit_transform(df["song_id"])
-        self.song_ids = list(le.classes_)
+        self.song_ids_map[username] = list(le.classes_)
 
         X = df[["mood_enc", "hour", "dow", "skipped", "replayed"]].values
         y = df["song_label"].values
@@ -203,35 +184,36 @@ class MLRecommender:
         clf.fit(X_train, y_train, sample_weight=w_train)
 
         acc = accuracy_score(y_test, clf.predict(X_test))
-        self.model = clf
+        self.models[username] = clf
         self._save_model()
 
-        logger.info(f"[ML] Training complete. Accuracy: {acc:.3f}")
+        logger.info(f"[ML] Training execution success for '{username}'. Matrix Accuracy: {acc:.3f}")
         return {
             "status": "trained",
+            "username": username,
             "events": len(events),
             "accuracy": round(acc, 4),
             "features": ["mood_enc", "hour", "dow", "skipped", "replayed"],
         }
 
-    def predict(self, mood: str, hour: int, limit: int = 10) -> list[str]:
+    def predict(self, username: str, mood: str, hour: int, limit: int = 10) -> list[str]:
         """
-        Returns ranked list of song_ids predicted for this context.
-        Falls back to rule-based if model isn't ready.
+        Runs ranked context probability predictions against the specific user's model block.
         """
-        if self.model is None or not self.song_ids:
+        model = self.models.get(username)
+        song_ids = self.song_ids_map.get(username)
+
+        if model is None or not song_ids:
             return []
 
         mood_enc = self._encode_mood(mood)
         dow = datetime.now().weekday()
 
-        # Get probability distribution over all songs
         X = np.array([[mood_enc, hour, dow, 0, 0]])
-        probs = self.model.predict_proba(X)[0]
+        probs = model.predict_proba(X)[0]
 
-        # Rank by probability, return top song_ids
         ranked = sorted(
-            zip(self.song_ids, probs),
+            zip(song_ids, probs),
             key=lambda x: x[1],
             reverse=True
         )
@@ -248,40 +230,39 @@ async def get_recommendations(
     mood: Optional[str],
     limit: int = 10,
     context: str = "home",
+    username: str = "default_user",  # ✅ Added user context keyword argument
 ) -> list[Song]:
     """
-    Main entry point for recommendations.
-    Auto-selects rule-based vs ML based on event count.
+    Main entry point for recommendation routing operations.
+    Determines matrix usage based on the user's personal event logs.
     """
     hour = datetime.now().hour
 
-    # Check how many events we have
-    count_result = await db.execute(select(func.count(PlayEvent.id)))
+    # Pull interaction limits specifically mapping back to the current profile
+    count_result = await db.execute(select(func.count(PlayEvent.id)).where(PlayEvent.username == username))
     event_count = count_result.scalar() or 0
 
-    if event_count >= MIN_EVENTS_FOR_ML and _recommender.model is not None:
-        logger.info(f"[ML] Using ML recommender (events={event_count})")
-        ml_ids = _recommender.predict(mood or "Chill", hour, limit)
+    if event_count >= MIN_EVENTS_FOR_ML and _recommender.models.get(username) is not None:
+        logger.info(f"[ML] Deploying specialized profile ML recommender matrix for '{username}' (events={event_count})")
+        ml_ids = _recommender.predict(username, mood or "Chill", hour, limit)
 
-        # Fetch from catalog
         if ml_ids:
             result = await db.execute(
                 select(SongCatalog).where(SongCatalog.id.in_(ml_ids))
             )
             rows = result.scalars().all()
             id_to_row = {r.id: r for r in rows}
-            # Preserve ranked order
             songs = [_song_catalog_to_schema(id_to_row[sid])
                      for sid in ml_ids if sid in id_to_row]
             if songs:
                 return songs
 
-    logger.info(f"[ML] Using rule-based recommender (events={event_count})")
+    logger.info(f"[ML] Fallback route triggered: Using rule-based matrix for '{username}' (events={event_count})")
     return rule_based_recommend(mood, hour, limit)
 
 
-async def trigger_training(db: AsyncSession) -> dict:
-    return await _recommender.train(db)
+async def trigger_training(db: AsyncSession, username: str = "default_user") -> dict:
+    return await _recommender.train(db, username)
 
 
 def get_recommender() -> MLRecommender:
