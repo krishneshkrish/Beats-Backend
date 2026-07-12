@@ -5,7 +5,7 @@ Phase 1 (active now):  Rule-based mood + time-of-day filtering from DB Catalog.
 Phase 2 (kicks in):    Random Forest trained on your real play events.
 
 Upgraded to dynamically fallback to real database catalog items rather than 
-hardcoded mock song elements.
+hardcoded mock song elements. Fully user-scoped layout matrix maps.
 """
 
 import os
@@ -54,7 +54,7 @@ def _time_label(hour: int) -> str:
         return "Afternoon Focus"
     elif 17 <= hour < 22:
         return "Evening Vibes"
-  else:
+    else:  # ✅ Indentation fixed cleanly here to match alignment rules
         return "Late Night"
 
 
@@ -256,7 +256,6 @@ async def get_recommendations(
                 return songs
 
     logger.info(f"[ML] Fallback route triggered: Using database-backed rule matrix for '{username}' (events={event_count})")
-    # ✅ Pass the active DB session context down into the updated rule-based handler
     return await rule_based_recommend(db, mood, hour, limit)
 
 
