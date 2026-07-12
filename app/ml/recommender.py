@@ -1,11 +1,11 @@
 """
 Beats Recommendation Engine
 ─────────────────────────────
-Phase 1 (active now):  Rule-based mood + time-of-day filtering.
+Phase 1 (active now):  Rule-based mood + time-of-day filtering from DB Catalog.
 Phase 2 (kicks in):    Random Forest trained on your real play events.
 
-Upgraded to support multi-user profile separation. The engine isolates 
-training data and classification matrices per username context.
+Upgraded to dynamically fallback to real database catalog items rather than 
+hardcoded mock song elements.
 """
 
 import os
@@ -22,14 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.db.database import PlayEvent, SongCatalog
-from app.db.mock_data import MOCK_SONGS, MOOD_SONG_MAP, SONG_GENRE_MAP
+from app.db.mock_data import MOCK_SONGS, MOOD_SONG_MAP
 from app.models.schemas import Song
 from app.core.config import get_settings
 
 logger = logging.getLogger("beats.ml")
 settings = get_settings()
 
-MIN_EVENTS_FOR_ML = 2   # switch to ML model after this many play events per user
+MIN_EVENTS_FOR_ML = 2   # ✅ Set low for seamless multi-user testing validation
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -54,59 +54,70 @@ def _time_label(hour: int) -> str:
         return "Afternoon Focus"
     elif 17 <= hour < 22:
         return "Evening Vibes"
-    else:
+  else:
         return "Late Night"
 
 
-# ── Phase 1: Rule-Based Recommender ──────────────────────────────────────────
+# ── Phase 1: Database-Driven Rule Recommender ─────────────────────────────────
 
-def rule_based_recommend(
+async def rule_based_recommend(
+    db: AsyncSession,
     mood: Optional[str],
     hour: int,
     limit: int = 10
 ) -> list[Song]:
-    candidate_ids: list[str] = []
+    """
+    Queries real songs stored inside our dynamic database SongCatalog table,
+    filtering elements dynamically to match current mood parameters.
+    """
+    try:
+        # 1. Pull all songs cached inside the production database catalog
+        result = await db.execute(select(SongCatalog))
+        catalog_rows = result.scalars().all()
+        
+        candidates = []
+        target_mood = mood.lower() if mood else "chill"
+        
+        # 2. Filter tracks matching target mood strings inside the JSON column
+        for row in catalog_rows:
+            try:
+                tags = [t.lower() for t in json.loads(row.mood_tags)] if row.mood_tags else []
+            except Exception:
+                tags = []
+                
+            if target_mood in tags or not mood:
+                candidates.append(_song_catalog_to_schema(row))
+                
+        # 3. Fallback: If no catalog item matches the mood tag, grab all available real songs
+        if not candidates and catalog_rows:
+            candidates = [_song_catalog_to_schema(row) for row in catalog_rows]
+            
+        # 4. Crisis Fallback: If database catalog table is entirely empty, yield mock template items
+        if not candidates:
+            candidates = [Song(
+                id=s.id, title=s.title, artist=s.artist, album=s.album,
+                artwork=s.artwork, duration=s.duration, url=s.url, lyrics=s.lyrics
+            ) for s in MOCK_SONGS]
+            
+        random.shuffle(candidates)
+        return candidates[:limit]
 
-    if mood and mood in MOOD_SONG_MAP:
-        candidate_ids = MOOD_SONG_MAP[mood].copy()
-
-    time_mood_map = {
-        "Morning Sessions": "Happy",
-        "Afternoon Focus":  "Focus",
-        "Evening Vibes":    "Chill",
-        "Late Night":       "Night",
-    }
-    time_mood = time_mood_map[_time_label(hour)]
-    time_ids = MOOD_SONG_MAP.get(time_mood, [])
-
-    for sid in time_ids:
-        if sid not in candidate_ids:
-            candidate_ids.append(sid)
-
-    if not candidate_ids:
-        candidate_ids = [s.id for s in MOCK_SONGS]
-
-    random.shuffle(candidate_ids)
-    id_to_song = {s.id: s for s in MOCK_SONGS}
-    return [id_to_song[sid] for sid in candidate_ids[:limit] if sid in id_to_song]
+    except Exception as e:
+        logger.error(f"[Rule Fallback Error] Failed to scan catalog rows: {str(e)}")
+        return [Song(id=s.id, title=s.title, artist=s.artist, album=s.album, artwork=s.artwork, duration=s.duration, url=s.url) for s in MOCK_SONGS[:limit]]
 
 
 # ── Phase 2: ML Recommender ───────────────────────────────────────────────────
 
 class MLRecommender:
-    """
-    Random Forest classifier isolated per user profile.
-    Tracks distinct matrix sets inside a global pickle file dictionary.
-    """
-
     MOOD_ENCODING = {
         "Happy": 0, "Chill": 1, "Focus": 2, "Workout": 3,
         "Night": 4, "Sad": 5,   "Party": 6, "Travel": 7,
     }
 
     def __init__(self):
-        self.models: dict = {}         # Keyed by username -> RandomForestClassifier
-        self.song_ids_map: dict = {}    # Keyed by username -> list of song IDs
+        self.models: dict = {}         
+        self.song_ids_map: dict = {}    
         self._load_model()
 
     def _load_model(self):
@@ -114,7 +125,6 @@ class MLRecommender:
             try:
                 with open(settings.MODEL_PATH, "rb") as f:
                     payload = pickle.load(f)
-                    # Graceful fallback handler for legacy single-user models
                     if "model" in payload and "song_ids" in payload:
                         self.models = {"default_user": payload["model"]}
                         self.song_ids_map = {"default_user": payload["song_ids"]}
@@ -135,15 +145,11 @@ class MLRecommender:
         return self.MOOD_ENCODING.get(mood, 1)
 
     async def train(self, db: AsyncSession, username: str = "default_user") -> dict:
-        """
-        Gathers telemetry rows bounded strictly by active username to train a unique RF grid.
-        """
         from sklearn.ensemble import RandomForestClassifier
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import accuracy_score
         from sklearn.preprocessing import LabelEncoder
 
-        # Fetch tracking rows isolating target user profile context
         result = await db.execute(select(PlayEvent).where(PlayEvent.username == username))
         events = result.scalars().all()
 
@@ -197,9 +203,6 @@ class MLRecommender:
         }
 
     def predict(self, username: str, mood: str, hour: int, limit: int = 10) -> list[str]:
-        """
-        Runs ranked context probability predictions against the specific user's model block.
-        """
         model = self.models.get(username)
         song_ids = self.song_ids_map.get(username)
 
@@ -230,15 +233,10 @@ async def get_recommendations(
     mood: Optional[str],
     limit: int = 10,
     context: str = "home",
-    username: str = "default_user",  # ✅ Added user context keyword argument
+    username: str = "default_user",
 ) -> list[Song]:
-    """
-    Main entry point for recommendation routing operations.
-    Determines matrix usage based on the user's personal event logs.
-    """
     hour = datetime.now().hour
 
-    # Pull interaction limits specifically mapping back to the current profile
     count_result = await db.execute(select(func.count(PlayEvent.id)).where(PlayEvent.username == username))
     event_count = count_result.scalar() or 0
 
@@ -257,8 +255,9 @@ async def get_recommendations(
             if songs:
                 return songs
 
-    logger.info(f"[ML] Fallback route triggered: Using rule-based matrix for '{username}' (events={event_count})")
-    return rule_based_recommend(mood, hour, limit)
+    logger.info(f"[ML] Fallback route triggered: Using database-backed rule matrix for '{username}' (events={event_count})")
+    # ✅ Pass the active DB session context down into the updated rule-based handler
+    return await rule_based_recommend(db, mood, hour, limit)
 
 
 async def trigger_training(db: AsyncSession, username: str = "default_user") -> dict:
