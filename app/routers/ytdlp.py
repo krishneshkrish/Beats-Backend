@@ -110,7 +110,7 @@ def _ytmusic_track_to_song(track: dict, stream_url: str) -> Song:
 async def search_media(
     q: str = Query(...),
     source: str = Query(default="youtube"),
-    limit: int = Query(default=1, ge=1, le=5),
+    limit: int = Query(default=1, ge=1, le=10),
 ):
     """Production Search Router: Instantly runs metadata calls with zero server overhead."""
     if source == "soundcloud":
