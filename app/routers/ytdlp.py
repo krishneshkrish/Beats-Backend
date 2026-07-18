@@ -12,6 +12,7 @@ import uuid
 import asyncio
 import logging
 from typing import Optional
+import yt_dlp
 
 from fastapi import APIRouter, HTTPException, Query
 from app.models.schemas import Song
@@ -57,8 +58,27 @@ def get_ytmusic():
 # ── Core Playback Helpers ─────────────────────────────────────────────────────
 
 async def _get_stream_url(video_id: str) -> str:
-    """Instantly returns an unblockable watch handle for the frontend player."""
-    return f"https://www.youtube.com/watch?v={video_id}"
+    """Extracts a direct playable audio-only stream URL using yt-dlp."""
+    def extract():
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+        }
+        cookies_path = "cookies.txt"
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+            
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                return info.get('url') or f"https://www.youtube.com/watch?v={video_id}"
+            except Exception as e:
+                logger.error(f"[yt-dlp error] Failed to extract audio stream for {video_id}: {e}")
+                return f"https://www.youtube.com/watch?v={video_id}"
+                
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, extract)
 
 
 def _best_thumbnail(thumbnails) -> str:
