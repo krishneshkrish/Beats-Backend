@@ -41,6 +41,13 @@ def get_ytmusic():
                 if "headers" in oauth_content:
                     _ytmusic = YTMusic(oauth_path)
                 else:
+                    # If OAuth token is expired/expiring, it cannot be refreshed without client credentials.
+                    # Fallback to standard unauthenticated mode to prevent KeyError: 'access_token' on API queries.
+                    import time
+                    expires_at = oauth_content.get("expires_at", 0)
+                    if expires_at and (expires_at - int(time.time()) < 60):
+                        raise ValueError("OAuth token is expired and client credentials are not available to refresh it.")
+                        
                     _ytmusic = YTMusic(
                         auth=json.dumps(oauth_content),
                         oauth_credentials=OAuthCredentials(client_id="", client_secret="")
