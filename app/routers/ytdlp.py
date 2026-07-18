@@ -31,7 +31,7 @@ def get_ytmusic():
     if _ytmusic is not None:
         return _ytmusic
     try:
-        from ytmusicapi import YTMusic
+        from ytmusicapi import YTMusic, OAuthCredentials
         oauth_path = settings.YTMUSIC_OAUTH_PATH
         
         if os.path.exists(oauth_path):
@@ -41,7 +41,10 @@ def get_ytmusic():
                 if "headers" in oauth_content:
                     _ytmusic = YTMusic(oauth_path)
                 else:
-                    _ytmusic = YTMusic(auth=json.dumps(oauth_content))
+                    _ytmusic = YTMusic(
+                        auth=json.dumps(oauth_content),
+                        oauth_credentials=OAuthCredentials(client_id="", client_secret="")
+                    )
                 logger.info(f"[ytmusicapi] Authenticated via {oauth_path}")
             except Exception as inner_e:
                 logger.warning(f"[ytmusicapi] Falling back to standard mode: {inner_e}")
@@ -64,6 +67,11 @@ async def _get_stream_url(video_id: str) -> str:
             'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android']
+                }
+            }
         }
         cookies_path = "cookies.txt"
         if os.path.exists(cookies_path):
@@ -200,6 +208,8 @@ async def get_lyrics(video_id: str = Query(...)):
             raise HTTPException(status_code=404, detail="No lyrics available")
         lyrics_data = await loop.run_in_executor(None, lambda: ytmusic.get_lyrics(lyrics_id))
         return {"lyrics": [line for line in (lyrics_data.get("lyrics") or "").split("\n") if line.strip()], "source": lyrics_data.get("source", "")}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
