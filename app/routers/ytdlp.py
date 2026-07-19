@@ -76,8 +76,12 @@ async def _get_stream_url(video_id: str) -> str:
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android']
+                    'player_client': ['android', 'ios']
                 }
+            },
+            'js_runtimes': {
+                'node': {'path': None},
+                'deno': {'path': None}
             }
         }
         cookies_path = "cookies.txt"
