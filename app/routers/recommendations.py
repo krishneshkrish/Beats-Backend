@@ -7,7 +7,7 @@ routing inputs natively into the isolated multi-user ML matrix structures.
 
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 
 @router.get("", response_model=list[Song])
 async def fetch_recommendations(
+    request: Request,
     mood: Optional[str] = Query(default=None),
     limit: int = Query(default=10, ge=1, le=20),
     context: str = Query(default="home"),
@@ -38,4 +39,7 @@ async def fetch_recommendations(
         context=context,
         username=username  # ✅ Passes tracking parameter to isolated classifier matrix
     )
+    base_url = str(request.base_url)
+    for s in songs:
+        s.resolve_url(base_url)
     return songs

@@ -15,6 +15,14 @@ class Song(BaseModel):
     url: str                # audio URL
     lyrics: Optional[List[str]] = None   # array of lyric lines
 
+    def resolve_url(self, base_url: str):
+        base_url = str(base_url)
+        if not base_url.endswith("/"):
+            base_url += "/"
+        if len(self.id) == 11 or "googlevideo.com" in self.url or "youtube.com" in self.url or "api/yt/stream" in self.url:
+            self.url = f"{base_url}api/yt/stream?video_id={self.id}"
+        return self
+
 
 # ── Greeting ──────────────────────────────────────────────────────────────────
 

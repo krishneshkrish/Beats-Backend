@@ -14,7 +14,9 @@ import logging
 from typing import Optional
 import yt_dlp
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+import httpx
 from app.models.schemas import Song
 from app.core.config import get_settings
 
@@ -145,8 +147,64 @@ def _ytmusic_track_to_song(track: dict, stream_url: str) -> Song:
 
 # ── Production Endpoints ──────────────────────────────────────────────────────
 
+@router.get("/stream")
+async def stream_audio(video_id: str, request: Request):
+    """Proxies the audio stream to bypass YouTube IP lock and support Range headers for seeking."""
+    stream_url = await _get_stream_url(video_id)
+    if not stream_url or "youtube.com/watch" in stream_url:
+        raise HTTPException(status_code=400, detail="Invalid audio stream source")
+        
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
+
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+    
+    async def stream_generator(response_obj):
+        try:
+            async for chunk in response_obj.aiter_bytes(chunk_size=65536):
+                yield chunk
+        finally:
+            await response_obj.aclose()
+            await client.aclose()
+
+    try:
+        req = client.build_request("GET", stream_url, headers=headers)
+        response = await client.send(req, stream=True)
+        
+        if response.status_code >= 400:
+            await response.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=response.status_code, detail="Failed to retrieve stream from source")
+            
+        resp_headers = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=3600",
+        }
+        if "content-range" in response.headers:
+            resp_headers["Content-Range"] = response.headers["content-range"]
+        if "content-length" in response.headers:
+            resp_headers["Content-Length"] = response.headers["content-length"]
+            
+        return StreamingResponse(
+            stream_generator(response),
+            status_code=response.status_code,
+            media_type=response.headers.get("content-type", "audio/mpeg"),
+            headers=resp_headers
+        )
+    except Exception as e:
+        logger.error(f"[Streaming Proxy Exception] {e}")
+        await client.aclose()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/search", response_model=list[Song])
 async def search_media(
+    request: Request,
     q: str = Query(...),
     source: str = Query(default="youtube"),
     limit: int = Query(default=1, ge=1, le=10),
@@ -167,10 +225,11 @@ async def search_media(
             return []
             
         songs = []
+        base_url = str(request.base_url)
         for track in raw[:limit]:
             vid_id = track.get("videoId")
             if vid_id:
-                stream_link = await _get_stream_url(vid_id)
+                stream_link = f"{base_url}api/yt/stream?video_id={vid_id}"
                 songs.append(_ytmusic_track_to_song(track, stream_link))
                 
         return songs
@@ -181,6 +240,7 @@ async def search_media(
 
 @router.get("/queue", response_model=list[Song])
 async def get_queue(
+    request: Request,
     video_id: str = Query(...),
     limit: int = Query(default=8, ge=3, le=15),
 ):
@@ -195,10 +255,11 @@ async def get_queue(
         tracks = [t for t in watch.get("tracks", []) if t.get("videoId") != video_id]
 
         songs = []
+        base_url = str(request.base_url)
         for t in tracks[:limit]:
             vid_id = t.get("videoId")
             if vid_id:
-                stream_link = await _get_stream_url(vid_id)
+                stream_link = f"{base_url}api/yt/stream?video_id={vid_id}"
                 songs.append(_ytmusic_track_to_song(t, stream_link))
         return songs
     except Exception as e:
@@ -226,7 +287,7 @@ async def get_lyrics(video_id: str = Query(...)):
 
 
 @router.get("/trending", response_model=list[Song])
-async def trending_searches(mood: Optional[str] = Query(default=None)):
+async def trending_searches(request: Request, mood: Optional[str] = Query(default=None)):
     """✅ Fixed: Added trending endpoints to prevent frontend 404s"""
     mood_queries = {
         "Happy":   "happy feel good songs 2026",
@@ -246,11 +307,12 @@ async def trending_searches(mood: Optional[str] = Query(default=None)):
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(None, lambda: ytmusic.search(query, filter="songs", limit=6))
         songs = []
+        base_url = str(request.base_url)
         if results:
             for track in results[:6]:
                 vid_id = track.get("videoId")
                 if vid_id:
-                    stream_link = await _get_stream_url(vid_id)
+                    stream_link = f"{base_url}api/yt/stream?video_id={vid_id}"
                     songs.append(_ytmusic_track_to_song(track, stream_link))
         return songs
     except Exception as e:
@@ -260,6 +322,7 @@ async def trending_searches(mood: Optional[str] = Query(default=None)):
 
 @router.get("/charts", response_model=list[Song])
 async def get_charts(
+    request: Request,
     country: str = Query(default="IN"),
     limit: int = Query(default=6, ge=1, le=20),
 ):
@@ -279,10 +342,11 @@ async def get_charts(
                 tracks = items
                 break
         songs = []
+        base_url = str(request.base_url)
         for track in tracks[:limit]:
             vid_id = track.get("videoId")
             if vid_id:
-                stream_link = await _get_stream_url(vid_id)
+                stream_link = f"{base_url}api/yt/stream?video_id={vid_id}"
                 songs.append(_ytmusic_track_to_song(track, stream_link))
         return songs
     except Exception as e:
@@ -291,6 +355,6 @@ async def get_charts(
 
 
 @router.get("/refresh")
-async def refresh_stream_url(video_id: str = Query(...), source: str = Query(default="youtube")):
-    url = await _get_stream_url(video_id)
+async def refresh_stream_url(request: Request, video_id: str = Query(...), source: str = Query(default="youtube")):
+    url = f"{request.base_url}api/yt/stream?video_id={video_id}"
     return {"video_id": video_id, "url": url, "source": source}

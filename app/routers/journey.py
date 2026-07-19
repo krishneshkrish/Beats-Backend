@@ -4,7 +4,7 @@ Converts raw play events into the Music Journey storytelling format —
 grouped by time-of-day, with milestone detection.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
@@ -53,13 +53,17 @@ def _detect_milestone(
 
 
 @router.get("/timeline", response_model=list[TimelineItem])
-async def journey_timeline(db: AsyncSession = Depends(get_db)):
+async def journey_timeline(request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(PlayEvent).order_by(PlayEvent.created_at.desc()).limit(50)
     )
     events = result.scalars().all()
 
+    base_url = str(request.base_url)
+
     if len(events) < 3:
+        for item in MOCK_JOURNEY:
+            item.song.resolve_url(base_url)
         return MOCK_JOURNEY
 
     items: list[TimelineItem] = []
@@ -93,10 +97,23 @@ async def journey_timeline(db: AsyncSession = Depends(get_db)):
             else event.timestamp
         )
 
+        # Copy the song object to prevent mutability issues on the global map
+        song_copy = Song(
+            id=song.id,
+            title=song.title,
+            artist=song.artist,
+            album=song.album,
+            artwork=song.artwork,
+            duration=song.duration,
+            url=song.url,
+            lyrics=song.lyrics
+        )
+        song_copy.resolve_url(base_url)
+
         items.append(TimelineItem(
             id=f"j{event.id}",
             timestamp=ts,
-            song=song,
+            song=song_copy,
             moodTag=event.mood_tag,
             timeLabel=label,
             isMilestone=is_milestone,

@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
@@ -22,6 +22,7 @@ MOCK_PLAYLISTS = [
 
 @router.get("/search", response_model=SearchResult)
 async def search(
+    request: Request,
     q: Optional[str] = Query(default=None),
     type: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
@@ -75,42 +76,48 @@ async def search(
             if i < len(db_songs):
                 playlist.artwork = db_songs[i].artwork
 
+    base_url = str(request.base_url)
+
     # Case A: Search input box is empty (Dashboard Initial State View)
     if not q:
-        return SearchResult(
+        res = SearchResult(
             songs=songs[:6],
             artists=artists[:6],
             albums=albums[:6],
             playlists=playlists,
         )
+    else:
+        # Case B: Active Text Filtering Logic execution
+        term = q.lower().strip()
 
-    # Case B: Active Text Filtering Logic execution
-    term = q.lower().strip()
+        filtered_songs = [
+            s for s in songs
+            if term in s.title.lower()
+            or term in s.artist.lower()
+            or term in s.album.lower()
+        ]
 
-    filtered_songs = [
-        s for s in songs
-        if term in s.title.lower()
-        or term in s.artist.lower()
-        or term in s.album.lower()
-    ]
+        filtered_artists = [a for a in artists if term in a.lower()]
+        filtered_albums = [al for al in albums if term in al.lower()]
+        filtered_playlists = [p for p in playlists if term in p.name.lower()]
 
-    filtered_artists = [a for a in artists if term in a.lower()]
-    filtered_albums = [al for al in albums if term in al.lower()]
-    filtered_playlists = [p for p in playlists if term in p.name.lower()]
+        # Apply category filters matching your specific type query tags
+        if type == "songs":
+            filtered_artists, filtered_albums, filtered_playlists = [], [], []
+        elif type == "artists":
+            filtered_songs, filtered_albums, filtered_playlists = [], [], []
+        elif type == "albums":
+            filtered_songs, filtered_artists, filtered_playlists = [], [], []
+        elif type == "playlists":
+            filtered_songs, filtered_artists, filtered_albums = [], [], []
 
-    # Apply category filters matching your specific type query tags
-    if type == "songs":
-        filtered_artists, filtered_albums, filtered_playlists = [], [], []
-    elif type == "artists":
-        filtered_songs, filtered_albums, filtered_playlists = [], [], []
-    elif type == "albums":
-        filtered_songs, filtered_artists, filtered_playlists = [], [], []
-    elif type == "playlists":
-        filtered_songs, filtered_artists, filtered_albums = [], [], []
+        res = SearchResult(
+            songs=filtered_songs,
+            artists=filtered_artists,
+            albums=filtered_albums,
+            playlists=filtered_playlists,
+        )
 
-    return SearchResult(
-        songs=filtered_songs,
-        artists=filtered_artists,
-        albums=filtered_albums,
-        playlists=filtered_playlists,
-    )
+    for s in res.songs:
+        s.resolve_url(base_url)
+    return res

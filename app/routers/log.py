@@ -8,7 +8,7 @@ external streaming catalog parameters, and serves fleet timeline syncs.
 import json
 from datetime import datetime
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -86,6 +86,7 @@ async def log_play_event(
 
 @router.get("/history", response_model=list[Song])
 async def get_user_history(
+    request: Request,
     username: str = Query(default="default_user"),
     limit: int = Query(default=10, ge=1, le=20),
     db: AsyncSession = Depends(get_db)
@@ -134,6 +135,9 @@ async def get_user_history(
                     url=row.url,
                     lyrics=json.loads(row.lyrics) if row.lyrics else None
                 ))
+        base_url = str(request.base_url)
+        for s in songs:
+            s.resolve_url(base_url)
         return songs
 
     except Exception as e:
