@@ -73,17 +73,13 @@ async def _get_stream_url(video_id: str) -> str:
     """Extracts a direct playable audio-only stream URL using yt-dlp."""
     def extract():
         ydl_opts = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios']
+                    'player_client': ['android', 'mweb']
                 }
-            },
-            'js_runtimes': {
-                'node': {'path': None},
-                'deno': {'path': None}
             }
         }
         cookies_path = "cookies.txt"
