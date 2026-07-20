@@ -14,7 +14,7 @@ MOCK_SONGS: list[Song] = [
         album="Digital Dawn",
         artwork="https://images.unsplash.com/photo-1614149162883-504ce4d13909?w=400&q=80",
         duration=217,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample1.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
         lyrics=["Neon lights", "Cutting through the night", "We rise above", "Into digital skies"],
     ),
     Song(
@@ -24,7 +24,7 @@ MOCK_SONGS: list[Song] = [
         album="Tidal Waves",
         artwork="https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400&q=80",
         duration=198,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample2.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
         lyrics=["Waves of sound", "Pull me under", "Lost in the tide", "Of midnight thunder"],
     ),
     Song(
@@ -34,7 +34,7 @@ MOCK_SONGS: list[Song] = [
         album="Street Sessions",
         artwork="https://images.unsplash.com/photo-1571974599782-87624638275e?w=400&q=80",
         duration=183,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample3.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
         lyrics=["Rev it up", "Streets are mine tonight", "Phonk in my veins", "Feel the adrenaline rise"],
     ),
     Song(
@@ -44,7 +44,7 @@ MOCK_SONGS: list[Song] = [
         album="Study Room Vol.2",
         artwork="https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400&q=80",
         duration=234,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample1.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
         lyrics=["Pages turning slow", "Rain outside", "Coffee going cold", "Mind drifting wide"],
     ),
     Song(
@@ -54,7 +54,7 @@ MOCK_SONGS: list[Song] = [
         album="Orbital",
         artwork="https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=400&q=80",
         duration=251,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample2.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
         lyrics=["Burning through the cosmos", "Flares of light", "Orbital decay", "Into endless night"],
     ),
     Song(
@@ -64,7 +64,7 @@ MOCK_SONGS: list[Song] = [
         album="Translucent",
         artwork="https://images.unsplash.com/photo-1504898770365-14faca6a7320?w=400&q=80",
         duration=209,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample3.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3",
         lyrics=["Fragile as glass", "Echoes in the hall", "Your voice lingers", "After the fall"],
     ),
     Song(
@@ -74,7 +74,7 @@ MOCK_SONGS: list[Song] = [
         album="Hardcode Sessions",
         artwork="https://images.unsplash.com/photo-1526478806334-5fd488fcaabc?w=400&q=80",
         duration=174,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample1.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3",
         lyrics=["Iron will", "Steel in my mind", "Tempo rising", "Leaving the weak behind"],
     ),
     Song(
@@ -84,7 +84,7 @@ MOCK_SONGS: list[Song] = [
         album="Dreamscape",
         artwork="https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=400&q=80",
         duration=262,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample2.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
         lyrics=["Between awake and sleep", "Colours bleed", "I reach for you", "In my lucid dream"],
     ),
     Song(
@@ -94,7 +94,7 @@ MOCK_SONGS: list[Song] = [
         album="After Hours",
         artwork="https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=400&q=80",
         duration=241,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample3.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3",
         lyrics=["City sleeps", "I'm still awake", "Code running deep", "Mistakes I can't unmake"],
     ),
     Song(
@@ -104,7 +104,7 @@ MOCK_SONGS: list[Song] = [
         album="Meridian",
         artwork="https://images.unsplash.com/photo-1506157786151-b8491531f063?w=400&q=80",
         duration=228,
-        url="https://files.testfile.org/AUDIO/C/M4A/sample1.m4a",
+        url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3",
         lyrics=["Golden light", "Fading at the edge", "Hold this moment", "Before it slips ahead"],
     ),
 ]

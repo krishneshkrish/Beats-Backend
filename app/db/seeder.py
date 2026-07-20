@@ -16,9 +16,19 @@ def _mood_tags_for_song(song_id: str) -> list[str]:
 
 
 async def seed_catalog(db: AsyncSession) -> None:
-    result = await db.execute(select(SongCatalog).limit(1))
-    if result.scalars().first():
-        return  # already seeded
+    result = await db.execute(select(SongCatalog))
+    rows = result.scalars().all()
+    if rows:
+        updated = False
+        song_map = {s.id: s for s in MOCK_SONGS}
+        for row in rows:
+            if "testfile.org" in row.url and row.id in song_map:
+                row.url = song_map[row.id].url
+                updated = True
+        if updated:
+            await db.commit()
+            print("[Beats] Updated database song catalog with valid audio stream URLs.")
+        return
 
     print("[Beats] Seeding song catalog...")
     for song in MOCK_SONGS:
