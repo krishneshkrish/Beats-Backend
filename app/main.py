@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings, setup_oauth_file
-from app.db.database import create_tables, AsyncSessionLocal
+from app.db.database import create_tables, get_session_local
 from app.db.seeder import seed_catalog
 from app.routers import greeting, recommendations, log, mood, analytics, journey, search, ml, ytdlp
 
@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
 
     # Seed song catalog if enabled
     if settings.SEED_MOCK_DATA:
-        async with AsyncSessionLocal() as db:
+        async with get_session_local() as db:
             await seed_catalog(db)
 
     logger.info(f"🚀 Beats API running on port {settings.APP_PORT}")

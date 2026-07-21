@@ -151,8 +151,13 @@ class MLModelStore(Base):
 
 # ── Dependency ────────────────────────────────────────────────────────────────
 
+def get_session_local() -> AsyncSession:
+    """Returns a new AsyncSession from the currently active sessionmaker."""
+    return AsyncSessionLocal()
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSessionLocal() as session:
+    async with get_session_local() as session:
         try:
             yield session
         finally:
