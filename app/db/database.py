@@ -1,5 +1,6 @@
 import os
 import logging
+import urllib.parse
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import String, Integer, Float, Boolean, Text, DateTime, func
@@ -39,9 +40,19 @@ def _build_engine_and_session(url: str):
 
 def _normalize_db_url(url: str) -> str:
     if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    # Safely handle unencoded '@' symbols in passwords (e.g. beatsbackend@1234)
+    prefix, sep, rest = url.partition("://")
+    if sep and rest.count("@") > 1:
+        creds, host_part = rest.rsplit("@", 1)
+        if ":" in creds:
+            user, pwd = creds.split(":", 1)
+            pwd_encoded = urllib.parse.quote(pwd, safe="")
+            url = f"{prefix}://{user}:{pwd_encoded}@{host_part}"
+
     return url
 
 
