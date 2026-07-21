@@ -1,4 +1,5 @@
 import os
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import String, Integer, Float, Boolean, Text, DateTime, func
@@ -7,32 +8,45 @@ from typing import AsyncGenerator
 
 from app.core.config import get_settings
 
+logger = logging.getLogger("beats.db")
 settings = get_settings()
 
-raw_db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./beats.db")
-if raw_db_url.startswith("postgres://"):
-    raw_db_url = raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
-elif raw_db_url.startswith("postgresql://"):
-    raw_db_url = raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-connect_args = {}
-if "sqlite" in raw_db_url:
-    connect_args["check_same_thread"] = False
-if "postgresql+asyncpg" in raw_db_url:
-    connect_args["statement_cache_size"] = 0
-    connect_args["prepared_statement_cache_size"] = 0
+def _build_engine_and_session(url: str):
+    connect_args = {}
+    if "sqlite" in url:
+        connect_args["check_same_thread"] = False
+    elif "postgresql+asyncpg" in url:
+        connect_args["statement_cache_size"] = 0
+        connect_args["prepared_statement_cache_size"] = 0
+        if "sslmode=disable" in url.lower():
+            connect_args["ssl"] = False
+        elif "sslmode=require" in url.lower() or "ssl=true" in url.lower():
+            connect_args["ssl"] = "require"
 
-engine = create_async_engine(
-    raw_db_url,
-    echo=settings.APP_ENV == "development",
-    connect_args=connect_args,
-)
+    eng = create_async_engine(
+        url,
+        echo=settings.APP_ENV == "development",
+        connect_args=connect_args,
+    )
+    session_factory = async_sessionmaker(
+        eng,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    return eng, session_factory
 
-AsyncSessionLocal = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+
+def _normalize_db_url(url: str) -> str:
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+raw_db_url = _normalize_db_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./beats.db"))
+engine, AsyncSessionLocal = _build_engine_and_session(raw_db_url)
 
 
 class Base(DeclarativeBase):
@@ -146,5 +160,15 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def create_tables():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    global engine, AsyncSessionLocal
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("✅ Database tables ready.")
+    except Exception as e:
+        logger.warning(f"⚠️ Primary DB connection failed ({e}). Falling back to local SQLite database.")
+        fallback_url = "sqlite+aiosqlite:///./beats.db"
+        engine, AsyncSessionLocal = _build_engine_and_session(fallback_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("✅ Fallback SQLite database tables ready.")
