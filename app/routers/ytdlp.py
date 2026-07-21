@@ -70,30 +70,56 @@ def get_ytmusic():
 # ── Core Playback Helpers ─────────────────────────────────────────────────────
 
 async def _get_stream_url(video_id: str) -> str:
-    """Extracts a direct playable audio-only stream URL using yt-dlp."""
+    """Extracts a direct playable audio-only stream URL using yt-dlp with multi-client anti-bot fallback."""
     def extract():
-        ydl_opts = {
+        cookies_path = "cookies.txt"
+        cookiefile = cookies_path if os.path.exists(cookies_path) else None
+
+        # Primary attempt: TV embedded + Android VR + Mobile clients
+        ydl_opts_1 = {
             'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'mweb']
+                    'player_client': ['tv_embedded', 'android_vr', 'mweb', 'android']
                 }
             }
         }
-        cookies_path = "cookies.txt"
-        if os.path.exists(cookies_path):
-            ydl_opts['cookiefile'] = cookies_path
-            
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
+        if cookiefile:
+            ydl_opts_1['cookiefile'] = cookiefile
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_1) as ydl:
                 info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                return info.get('url') or f"https://www.youtube.com/watch?v={video_id}"
-            except Exception as e:
-                logger.error(f"[yt-dlp error] Failed to extract audio stream for {video_id}: {e}")
-                return f"https://www.youtube.com/watch?v={video_id}"
-                
+                url = info.get('url')
+                if url and "googlevideo.com" in url:
+                    return url
+        except Exception as e:
+            logger.warning(f"[yt-dlp primary extract failed for {video_id}]: {e}")
+
+        # Fallback attempt: Unauthenticated TV & Android VR embed client sequence (bypasses cloud IP bot detection)
+        ydl_opts_2 = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded', 'android_vr', 'web_embedded', 'mweb']
+                }
+            }
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_2) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                url = info.get('url')
+                if url:
+                    return url
+        except Exception as e:
+            logger.error(f"[yt-dlp fallback extract failed for {video_id}]: {e}")
+
+        return f"https://www.youtube.com/watch?v={video_id}"
+
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, extract)
 
