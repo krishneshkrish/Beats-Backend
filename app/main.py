@@ -3,10 +3,11 @@ Beats Backend — FastAPI entry point.
 """
 
 import os
+import re
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings, setup_oauth_file
@@ -52,6 +53,12 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+@app.middleware("http")
+async def normalize_double_slashes(request: Request, call_next):
+    if request.scope.get("path", "").startswith("//"):
+        request.scope["path"] = re.sub(r"^/+", "/", request.scope["path"])
+    return await call_next(request)
 
 # ── CORS — allow Next.js dev server + production ──────────────────────────────
 app.add_middleware(
