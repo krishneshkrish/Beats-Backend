@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import urllib.parse
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -13,47 +14,50 @@ logger = logging.getLogger("beats.db")
 settings = get_settings()
 
 
+def _normalize_db_url(url: str) -> str:
+    # 1. Clean sslmode parameters using regex
+    cleaned_url = re.sub(r'[\?&]sslmode=[^&]*', '', url)
+    if '?' not in cleaned_url and '&' in cleaned_url:
+        cleaned_url = cleaned_url.replace('&', '?', 1)
+
+    # 2. Convert to postgresql+asyncpg://
+    if cleaned_url.startswith("postgres://"):
+        cleaned_url = cleaned_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif cleaned_url.startswith("postgresql://"):
+        cleaned_url = cleaned_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    # 3. Safely handle unencoded '@' symbols in passwords (e.g. beatsbackend@1234)
+    prefix, sep, rest = cleaned_url.partition("://")
+    if sep and rest.count("@") > 1:
+        creds, host_part = rest.rsplit("@", 1)
+        if ":" in creds:
+            user, pwd = creds.split(":", 1)
+            pwd_encoded = urllib.parse.quote(pwd, safe="")
+            cleaned_url = f"{prefix}://{user}:{pwd_encoded}@{host_part}"
+
+    return cleaned_url
+
+
 def _build_engine_and_session(url: str):
+    engine_kwargs = {"echo": settings.APP_ENV == "development"}
     connect_args = {}
+
     if "sqlite" in url:
         connect_args["check_same_thread"] = False
     elif "postgresql+asyncpg" in url:
         connect_args["statement_cache_size"] = 0
         connect_args["prepared_statement_cache_size"] = 0
-        if "sslmode=disable" in url.lower():
-            connect_args["ssl"] = False
-        elif "sslmode=require" in url.lower() or "ssl=true" in url.lower():
-            connect_args["ssl"] = "require"
 
-    eng = create_async_engine(
-        url,
-        echo=settings.APP_ENV == "development",
-        connect_args=connect_args,
-    )
+    if connect_args:
+        engine_kwargs["connect_args"] = connect_args
+
+    eng = create_async_engine(url, **engine_kwargs)
     session_factory = async_sessionmaker(
         eng,
         class_=AsyncSession,
         expire_on_commit=False,
     )
     return eng, session_factory
-
-
-def _normalize_db_url(url: str) -> str:
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-    # Safely handle unencoded '@' symbols in passwords (e.g. beatsbackend@1234)
-    prefix, sep, rest = url.partition("://")
-    if sep and rest.count("@") > 1:
-        creds, host_part = rest.rsplit("@", 1)
-        if ":" in creds:
-            user, pwd = creds.split(":", 1)
-            pwd_encoded = urllib.parse.quote(pwd, safe="")
-            url = f"{prefix}://{user}:{pwd_encoded}@{host_part}"
-
-    return url
 
 
 raw_db_url = _normalize_db_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./beats.db"))
