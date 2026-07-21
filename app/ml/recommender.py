@@ -10,6 +10,7 @@ hardcoded mock song elements. Fully user-scoped layout matrix maps.
 
 import os
 import json
+import base64
 import pickle
 import random
 import logging
@@ -21,7 +22,7 @@ import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.db.database import PlayEvent, SongCatalog
+from app.db.database import PlayEvent, SongCatalog, MLModelStore
 from app.db.mock_data import MOCK_SONGS, MOOD_SONG_MAP
 from app.models.schemas import Song
 from app.core.config import get_settings
@@ -141,6 +142,48 @@ class MLRecommender:
             pickle.dump({"models": self.models, "song_ids_map": self.song_ids_map}, f)
         logger.info(f"[ML] Scoped profile matrices saved safely to disk.")
 
+    async def load_model_from_db(self, db: AsyncSession, username: str):
+        """Loads and unpickles the ML model for username from MLModelStore in database."""
+        try:
+            result = await db.execute(select(MLModelStore).where(MLModelStore.username == username))
+            record = result.scalars().first()
+            if record and record.model_data:
+                decoded = base64.b64decode(record.model_data.encode("utf-8"))
+                payload = pickle.loads(decoded)
+                if isinstance(payload, dict):
+                    if "model" in payload and "song_ids" in payload:
+                        self.models[username] = payload["model"]
+                        self.song_ids_map[username] = payload["song_ids"]
+                        logger.info(f"[ML] Hydrated model from DB for profile '{username}'")
+        except Exception as e:
+            logger.warning(f"[ML] Could not load model from DB for '{username}': {e}")
+
+    async def save_model_to_db(self, db: AsyncSession, username: str):
+        """Pickles, base64 encodes, and persists the ML model for username into MLModelStore in database."""
+        try:
+            model = self.models.get(username)
+            song_ids = self.song_ids_map.get(username)
+            if model is None or song_ids is None:
+                return
+
+            payload = {"model": model, "song_ids": song_ids}
+            pickled = pickle.dumps(payload)
+            b64_str = base64.b64encode(pickled).decode("utf-8")
+
+            result = await db.execute(select(MLModelStore).where(MLModelStore.username == username))
+            record = result.scalars().first()
+            if record:
+                record.model_data = b64_str
+            else:
+                record = MLModelStore(username=username, model_data=b64_str)
+                db.add(record)
+
+            await db.commit()
+            logger.info(f"[ML] Saved model to DB for profile '{username}'")
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"[ML] Failed to save model to DB for '{username}': {e}")
+
     def _encode_mood(self, mood: str) -> int:
         return self.MOOD_ENCODING.get(mood, 1)
 
@@ -192,6 +235,7 @@ class MLRecommender:
         acc = accuracy_score(y_test, clf.predict(X_test))
         self.models[username] = clf
         self._save_model()
+        await self.save_model_to_db(db, username)
 
         logger.info(f"[ML] Training execution success for '{username}'. Matrix Accuracy: {acc:.3f}")
         return {
@@ -236,6 +280,9 @@ async def get_recommendations(
     username: str = "default_user",
 ) -> list[Song]:
     hour = datetime.now().hour
+
+    if _recommender.models.get(username) is None:
+        await _recommender.load_model_from_db(db, username)
 
     count_result = await db.execute(select(func.count(PlayEvent.id)).where(PlayEvent.username == username))
     event_count = count_result.scalar() or 0

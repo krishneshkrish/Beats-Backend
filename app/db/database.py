@@ -1,6 +1,7 @@
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Integer, Float, Boolean, Text, DateTime
+from sqlalchemy import String, Integer, Float, Boolean, Text, DateTime, func
 from datetime import datetime
 from typing import AsyncGenerator
 
@@ -8,10 +9,23 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+raw_db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./beats.db")
+if raw_db_url.startswith("postgres://"):
+    raw_db_url = raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif raw_db_url.startswith("postgresql://"):
+    raw_db_url = raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+connect_args = {}
+if "sqlite" in raw_db_url:
+    connect_args["check_same_thread"] = False
+if "postgresql+asyncpg" in raw_db_url:
+    connect_args["statement_cache_size"] = 0
+    connect_args["prepared_statement_cache_size"] = 0
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    raw_db_url,
     echo=settings.APP_ENV == "development",
-    connect_args={"check_same_thread": False},
+    connect_args=connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -107,6 +121,18 @@ class UserSession(Base):
     mood_at_start: Mapped[str] = mapped_column(String(32), default="Chill")
     songs_played: Mapped[int] = mapped_column(Integer, default=0)
     total_duration: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class MLModelStore(Base):
+    """
+    Stores trained ML recommendation model artifacts directly in PostgreSQL/SQLite database
+    so they persist across Render container restarts.
+    """
+    __tablename__ = "ml_models"
+
+    username: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    model_data: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 # ── Dependency ────────────────────────────────────────────────────────────────
