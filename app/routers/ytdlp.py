@@ -460,8 +460,8 @@ def _ytmusic_track_to_song(track: dict, stream_url: str) -> Song:
 @router.get("/stream")
 async def stream_audio(video_id: str, request: Request):
     """Proxies the audio stream to bypass YouTube IP lock and support Range headers for seeking."""
-    res = await _get_stream_url(video_id)
-    stream_url, cached_headers = res if isinstance(res, tuple) else (res, {})
+    from app.services.stream_resolver import get_audio_stream
+    stream_url, cached_headers = await get_audio_stream(video_id)
     if not stream_url or "youtube.com/watch" in stream_url:
         logger.warning(f"[Stream Proxy] Stream url for {video_id} failed or not extracted. Using fallback stream.")
         stream_url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
@@ -779,5 +779,31 @@ async def get_pot_status():
             "error": str(e),
             "process_state": proc_status
         }
+
+
+@proxy_router.get("/api/stream/{video_id}")
+async def get_stream_url_json(video_id: str, request: Request):
+    """
+    Exposes direct playable stream URL as a JSON response.
+    Sets Cache-Control headers for performance.
+    """
+    from app.services.stream_resolver import get_audio_stream
+    from fastapi.responses import JSONResponse
+    
+    stream_url, headers = await get_audio_stream(video_id)
+    if not stream_url:
+        raise HTTPException(status_code=404, detail="Stream could not be resolved from any provider")
+        
+    return JSONResponse(
+        content={
+            "status": "success",
+            "video_id": video_id,
+            "stream_url": stream_url,
+            "format": "m4a"
+        },
+        headers={
+            "Cache-Control": "public, max-age=3600"
+        }
+    )
 
 
