@@ -101,16 +101,20 @@ def _get_url_expiry(url: str) -> float:
     # Default to 2 hours from now if we can't parse it
     return time.time() + 7200
 
-async def _get_stream_url(video_id: str) -> str:
+async def _get_stream_url(video_id: str) -> tuple[str, dict]:
     """Extracts a direct playable audio-only stream URL using yt-dlp with multi-client anti-bot fallback."""
     # Check cache first
     cached_data = _STREAM_URL_CACHE.get(video_id)
     if cached_data:
-        expiry, url = cached_data
+        if len(cached_data) == 3:
+            expiry, url, headers = cached_data
+        else:
+            expiry, url = cached_data
+            headers = {}
         # If cache is valid (with 10 minutes safety margin), return it
         if time.time() < expiry - 600:
             logger.info(f"[Stream URL Cache Hit] Resolved {video_id} from cache.")
-            return url
+            return url, headers
 
     # Resolve track title & artist for the search fallback retry asynchronously on the main loop
     title = None
@@ -327,7 +331,7 @@ async def _get_stream_url(video_id: str) -> str:
                     url = info.get('url')
                     if url and "googlevideo.com" in url:
                         logger.info(f"[yt-dlp Direct Lookup Succeeded] Resolved via {tier_name} for {video_id}")
-                        return url
+                        return url, info.get('http_headers', {})
             except Exception as e:
                 logger.warning(f"[yt-dlp Direct Lookup Failed] {tier_name} failed for {video_id}: {e}")
 
@@ -348,7 +352,7 @@ async def _get_stream_url(video_id: str) -> str:
                             url = entry.get('url')
                             if url and "googlevideo.com" in url:
                                 logger.info(f"[yt-dlp Search Retry Succeeded] Resolved via {tier_name} for query '{search_query}'")
-                                return url
+                                return url, entry.get('http_headers') or info.get('http_headers', {})
                 except Exception as search_err:
                     logger.error(f"[yt-dlp Search Retry Failed] {tier_name} failed for query '{search_query}': {search_err}")
 
@@ -360,7 +364,7 @@ async def _get_stream_url(video_id: str) -> str:
             audio_stream = yt.streams.filter(only_audio=True).first()
             if audio_stream and audio_stream.url:
                 logger.info(f"[pytubefix succeeded for {video_id}]")
-                return audio_stream.url
+                return audio_stream.url, {}
         except Exception as py_err:
             logger.error(f"[pytubefix failed for {video_id}]: {py_err}")
 
@@ -388,23 +392,24 @@ async def _get_stream_url(video_id: str) -> str:
                                 url = entry.get('url')
                                 if url:
                                     logger.info(f"[SoundCloud Fallback succeeded for query '{query}']: {url}")
-                                    return url
+                                    return url, {}
                     except Exception as sc_err:
                         logger.warning(f"[SoundCloud Fallback] SoundCloud search failed for query '{query}': {sc_err}")
         except Exception as sc_global_err:
             logger.error(f"[SoundCloud Fallback] Global SoundCloud extraction error: {sc_global_err}")
 
-        return f"https://www.youtube.com/watch?v={video_id}"
+        return f"https://www.youtube.com/watch?v={video_id}", {}
 
     loop = asyncio.get_event_loop()
-    url = await loop.run_in_executor(None, extract)
+    res = await loop.run_in_executor(None, extract)
+    url, headers = res if isinstance(res, tuple) else (res, {})
     
     if url and "youtube.com/watch" not in url:
         expiry = _get_url_expiry(url)
-        _STREAM_URL_CACHE[video_id] = (expiry, url)
+        _STREAM_URL_CACHE[video_id] = (expiry, url, headers)
         logger.info(f"[Stream URL Cache Populate] Cached {video_id} (expires in {int(expiry - time.time())}s)")
         
-    return url
+    return url, headers
 
 
 def _best_thumbnail(thumbnails) -> str:
@@ -455,23 +460,23 @@ def _ytmusic_track_to_song(track: dict, stream_url: str) -> Song:
 @router.get("/stream")
 async def stream_audio(video_id: str, request: Request):
     """Proxies the audio stream to bypass YouTube IP lock and support Range headers for seeking."""
-    stream_url = await _get_stream_url(video_id)
+    res = await _get_stream_url(video_id)
+    stream_url, cached_headers = res if isinstance(res, tuple) else (res, {})
     if not stream_url or "youtube.com/watch" in stream_url:
         logger.warning(f"[Stream Proxy] Stream url for {video_id} failed or not extracted. Using fallback stream.")
         stream_url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+        cached_headers = {}
         
-    # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
-    # Android client needs the official youtube Android client app agent to avoid 403 Forbidden.
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    if "c=ANDROID" in stream_url:
-        user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
-    elif "c=IOS" in stream_url or "c=APPLE_IV" in stream_url:
-        user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
-    
-    headers = {
-        "User-Agent": user_agent
-    }
-    
+    headers = dict(cached_headers) if cached_headers else {}
+    if "User-Agent" not in headers:
+        # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        if "c=ANDROID" in stream_url:
+            user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
+        elif "c=IOS" in stream_url or "c=APPLE_IV" in stream_url:
+            user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
+        headers["User-Agent"] = user_agent
+        
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
@@ -690,18 +695,23 @@ async def stream_proxy(request: Request, url: str = Query(...)):
 
     logger.info(f"[Stream Proxy] Proxying URL: {url[:100]}...")
     
-    # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
-    # Android client needs the official youtube Android client app agent to avoid 403 Forbidden.
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    if "c=ANDROID" in url:
-        user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
-    elif "c=IOS" in url or "c=APPLE_IV" in url:
-        user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
+    # Look up headers in the in-memory cache to match the exact client profile that resolved it
+    cached_headers = {}
+    for cached in _STREAM_URL_CACHE.values():
+        if len(cached) == 3 and cached[1] == url:
+            cached_headers = cached[2]
+            break
+            
+    headers = dict(cached_headers) if cached_headers else {}
+    if "User-Agent" not in headers:
+        # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        if "c=ANDROID" in url:
+            user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
+        elif "c=IOS" in url or "c=APPLE_IV" in url:
+            user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
+        headers["User-Agent"] = user_agent
         
-    headers = {
-        "User-Agent": user_agent
-    }
-    
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
