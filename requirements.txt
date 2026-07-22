@@ -15,4 +15,5 @@ yt-dlp[default]
 asyncpg>=0.29.0
 greenlet>=3.0.0
 psycopg2-binary>=2.9.9
+pytubefix>=10.10.1
 

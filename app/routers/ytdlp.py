@@ -213,6 +213,20 @@ async def _get_stream_url(video_id: str) -> str:
         except Exception as e:
             logger.error(f"[yt-dlp Tier 3 fallback failed for {video_id}]: {e}")
 
+        # Tier 4: pytubefix Fallback
+        # Since pytubefix generates PO Tokens dynamically on the host IP using Node.js,
+        # it is highly resilient against cloud-IP BotGuard blocks.
+        try:
+            from pytubefix import YouTube as PyTubeYouTube
+            logger.info(f"[pytubefix] Attempting dynamic extraction fallback for {video_id}...")
+            yt = PyTubeYouTube(f"https://www.youtube.com/watch?v={video_id}", client='WEB')
+            audio_stream = yt.streams.filter(only_audio=True).first()
+            if audio_stream and audio_stream.url:
+                logger.info(f"[pytubefix succeeded for {video_id}]")
+                return audio_stream.url
+        except Exception as py_err:
+            logger.error(f"[pytubefix failed for {video_id}]: {py_err}")
+
         return f"https://www.youtube.com/watch?v={video_id}"
 
     loop = asyncio.get_event_loop()
