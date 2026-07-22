@@ -24,6 +24,20 @@ logger = logging.getLogger("beats.media")
 router = APIRouter(prefix="/api/yt", tags=["media"])
 settings = get_settings()
 
+# ── Shared HTTPX AsyncClient for Proxying ──────────────────────────────────────
+
+_shared_client: Optional[httpx.AsyncClient] = None
+
+def get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30.0,
+            limits=httpx.Limits(max_keepalive_connections=50, max_connections=100)
+        )
+    return _shared_client
+
 # ── ytmusicapi Client Lazy Initializer ────────────────────────────────────────
 
 _ytmusic = None
@@ -69,8 +83,35 @@ def get_ytmusic():
 
 # ── Core Playback Helpers ─────────────────────────────────────────────────────
 
+import urllib.parse
+import time
+
+# Simple in-memory cache: video_id -> (expiry_epoch_seconds, url)
+_STREAM_URL_CACHE = {}
+
+def _get_url_expiry(url: str) -> float:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query)
+        expire_val = params.get('expire')
+        if expire_val:
+            return float(expire_val[0])
+    except Exception:
+        pass
+    # Default to 2 hours from now if we can't parse it
+    return time.time() + 7200
+
 async def _get_stream_url(video_id: str) -> str:
     """Extracts a direct playable audio-only stream URL using yt-dlp with multi-client anti-bot fallback."""
+    # Check cache first
+    cached_data = _STREAM_URL_CACHE.get(video_id)
+    if cached_data:
+        expiry, url = cached_data
+        # If cache is valid (with 10 minutes safety margin), return it
+        if time.time() < expiry - 600:
+            logger.info(f"[Stream URL Cache Hit] Resolved {video_id} from cache.")
+            return url
+
     # Resolve track title & artist for the search fallback retry asynchronously on the main loop
     title = None
     artist = None
@@ -170,6 +211,9 @@ async def _get_stream_url(video_id: str) -> str:
                     ],
                     'visitor_data': visitor_data,
                     'js_runtime': 'node'
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -187,6 +231,9 @@ async def _get_stream_url(video_id: str) -> str:
                     'player_client': ['tv_embedded', 'android'],
                     'player_skip': ['web', 'web_embedded', 'mweb', 'ios'],
                     'js_runtime': 'node'
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -202,6 +249,9 @@ async def _get_stream_url(video_id: str) -> str:
                     'player_client': ['tv_embedded', 'android'],
                     'player_skip': ['web', 'web_embedded', 'mweb', 'ios'],
                     'js_runtime': 'node'
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -218,6 +268,9 @@ async def _get_stream_url(video_id: str) -> str:
                 'youtube': {
                     'player_client': ['tv_embedded', 'android_vr', 'mweb', 'android'],
                     'js_runtime': 'node'
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -312,7 +365,14 @@ async def _get_stream_url(video_id: str) -> str:
         return f"https://www.youtube.com/watch?v={video_id}"
 
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, extract)
+    url = await loop.run_in_executor(None, extract)
+    
+    if url and "youtube.com/watch" not in url:
+        expiry = _get_url_expiry(url)
+        _STREAM_URL_CACHE[video_id] = (expiry, url)
+        logger.info(f"[Stream URL Cache Populate] Cached {video_id} (expires in {int(expiry - time.time())}s)")
+        
+    return url
 
 
 def _best_thumbnail(thumbnails) -> str:
@@ -384,7 +444,7 @@ async def stream_audio(video_id: str, request: Request):
     if range_header:
         headers["Range"] = range_header
 
-    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+    client = get_shared_client()
     
     async def stream_generator(response_obj):
         try:
@@ -392,7 +452,6 @@ async def stream_audio(video_id: str, request: Request):
                 yield chunk
         finally:
             await response_obj.aclose()
-            await client.aclose()
 
     try:
         req = client.build_request("GET", stream_url, headers=headers)
@@ -400,7 +459,6 @@ async def stream_audio(video_id: str, request: Request):
         
         if response.status_code >= 400:
             await response.aclose()
-            await client.aclose()
             raise HTTPException(status_code=response.status_code, detail="Failed to retrieve stream from source")
             
         resp_headers = {
@@ -420,7 +478,6 @@ async def stream_audio(video_id: str, request: Request):
         )
     except Exception as e:
         logger.error(f"[Streaming Proxy Exception] {e}")
-        await client.aclose()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -617,7 +674,7 @@ async def stream_proxy(request: Request, url: str = Query(...)):
     if range_header:
         headers["Range"] = range_header
 
-    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+    client = get_shared_client()
     
     async def stream_generator(response_obj):
         try:
@@ -625,7 +682,6 @@ async def stream_proxy(request: Request, url: str = Query(...)):
                 yield chunk
         finally:
             await response_obj.aclose()
-            await client.aclose()
 
     try:
         req = client.build_request("GET", url, headers=headers)
@@ -633,7 +689,6 @@ async def stream_proxy(request: Request, url: str = Query(...)):
         
         if response.status_code >= 400:
             await response.aclose()
-            await client.aclose()
             raise HTTPException(status_code=response.status_code, detail="Failed to retrieve stream from source")
             
         resp_headers = {
@@ -657,7 +712,6 @@ async def stream_proxy(request: Request, url: str = Query(...)):
         )
     except Exception as e:
         logger.error(f"[Stream Proxy Exception] {e}")
-        await client.aclose()
         raise HTTPException(status_code=500, detail=str(e))
 
 

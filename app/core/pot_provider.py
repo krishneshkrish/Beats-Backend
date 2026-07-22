@@ -35,6 +35,7 @@ def get_binary_path() -> str:
     return os.path.join(os.getcwd(), name)
 
 def download_binary() -> bool:
+    system = platform.system().lower()
     name = get_binary_name()
     if not name:
         logger.warning(f"⚠️  Unsupported platform/architecture for PO Token Provider: {platform.system()} {platform.machine()}")
