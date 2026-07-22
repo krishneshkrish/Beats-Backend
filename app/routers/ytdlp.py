@@ -243,6 +243,75 @@ async def _get_stream_url(video_id: str) -> str:
         except Exception as py_err:
             logger.error(f"[pytubefix failed for {video_id}]: {py_err}")
 
+        # Tier 5: SoundCloud Search and Extraction Fallback
+        # If all YouTube methods are blocked, we retrieve track metadata (title/artist)
+        # and search SoundCloud for a direct progressive MP3 stream.
+        try:
+            logger.info(f"[SoundCloud Fallback] YouTube blocked. Fetching metadata for {video_id} to query SoundCloud...")
+            title = None
+            artist = None
+            
+            # 1. Fetch metadata from YTMusic
+            ytmusic = get_ytmusic()
+            if ytmusic:
+                try:
+                    song_details = ytmusic.get_song(video_id)
+                    if song_details and "videoDetails" in song_details:
+                        details = song_details["videoDetails"]
+                        title = details.get("title")
+                        artist = details.get("author")
+                except Exception as meta_err:
+                    logger.warning(f"[SoundCloud Fallback] Failed to fetch YTMusic metadata: {meta_err}")
+            
+            # 2. If YTMusic failed, query local database catalog
+            if not title or not artist:
+                try:
+                    from app.db.database import AsyncSessionLocal, SongCatalog
+                    from sqlalchemy import select
+                    async def fetch_db_metadata():
+                        async with AsyncSessionLocal() as session:
+                            res = await session.execute(select(SongCatalog).where(SongCatalog.id == video_id))
+                            row = res.scalar_one_or_none()
+                            if row:
+                                return row.title, row.artist
+                            return None, None
+                    
+                    try:
+                        loop_temp = asyncio.new_event_loop()
+                        title, artist = loop_temp.run_until_complete(fetch_db_metadata())
+                        loop_temp.close()
+                    except Exception:
+                        pass
+                except Exception as db_err:
+                    logger.warning(f"[SoundCloud Fallback] DB metadata fetch failed: {db_err}")
+
+            if title:
+                search_queries = []
+                if artist:
+                    search_queries.append(f"{title} {artist}")
+                search_queries.append(title)
+                
+                for query in search_queries:
+                    logger.info(f"[SoundCloud Fallback] Searching SoundCloud for: '{query}'...")
+                    ydl_opts_sc = {
+                        'format': 'best[protocol=http]/bestaudio[protocol=http]/http_mp3/best',
+                        'quiet': True,
+                        'no_warnings': True,
+                    }
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts_sc) as ydl:
+                            info = ydl.extract_info(f"scsearch1:{query}", download=False)
+                            if info and 'entries' in info and info['entries']:
+                                entry = info['entries'][0]
+                                url = entry.get('url')
+                                if url:
+                                    logger.info(f"[SoundCloud Fallback succeeded for query '{query}']: {url}")
+                                    return url
+                    except Exception as sc_err:
+                        logger.warning(f"[SoundCloud Fallback] SoundCloud search failed for query '{query}': {sc_err}")
+        except Exception as sc_global_err:
+            logger.error(f"[SoundCloud Fallback] Global SoundCloud extraction error: {sc_global_err}")
+
         return f"https://www.youtube.com/watch?v={video_id}"
 
     loop = asyncio.get_event_loop()
