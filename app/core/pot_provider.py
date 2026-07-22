@@ -73,7 +73,7 @@ def start_provider():
             creationflags = subprocess.CREATE_NO_WINDOW
             
         _process = subprocess.Popen(
-            [path],
+            [path, "server", "--port", "4416", "--host", "127.0.0.1"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creationflags

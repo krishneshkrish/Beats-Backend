@@ -71,49 +71,39 @@ def get_ytmusic():
 
 async def _get_stream_url(video_id: str) -> str:
     """Extracts a direct playable audio-only stream URL using yt-dlp with multi-client anti-bot fallback."""
+    # Resolve track title & artist for the search fallback retry asynchronously on the main loop
+    title = None
+    artist = None
+    ytmusic = get_ytmusic()
+    if ytmusic:
+        try:
+            # get_song makes blocking network requests; run in executor to keep the main event loop responsive
+            loop = asyncio.get_running_loop()
+            song_details = await loop.run_in_executor(None, ytmusic.get_song, video_id)
+            if song_details and "videoDetails" in song_details:
+                details = song_details["videoDetails"]
+                title = details.get("title")
+                artist = details.get("author")
+        except Exception as e:
+            logger.warning(f"Failed to fetch YTMusic metadata: {e}")
+
+    if not title or not artist:
+        try:
+            from app.db.database import AsyncSessionLocal, SongCatalog
+            from sqlalchemy import select
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(select(SongCatalog).where(SongCatalog.id == video_id))
+                row = res.scalar_one_or_none()
+                if row:
+                    title = row.title
+                    artist = row.artist
+        except Exception as db_err:
+            logger.warning(f"DB metadata fetch failed: {db_err}")
+
     def extract():
         from yt_dlp.utils import DownloadError, ExtractorError
         cookies_path = "cookies.txt"
         cookiefile = cookies_path if os.path.exists(cookies_path) else None
-
-        # Resolve track title & artist for the search fallback retry
-        title = None
-        artist = None
-        ytmusic = get_ytmusic()
-        if ytmusic:
-            try:
-                song_details = ytmusic.get_song(video_id)
-                if song_details and "videoDetails" in song_details:
-                    details = song_details["videoDetails"]
-                    title = details.get("title")
-                    artist = details.get("author")
-            except Exception as e:
-                logger.warning(f"Failed to fetch YTMusic metadata: {e}")
-
-        if not title or not artist:
-            try:
-                from app.db.database import AsyncSessionLocal, SongCatalog
-                from sqlalchemy import select
-                async def fetch_db_metadata():
-                    async with AsyncSessionLocal() as session:
-                        res = await session.execute(select(SongCatalog).where(SongCatalog.id == video_id))
-                        row = res.scalar_one_or_none()
-                        if row:
-                            return row.title, row.artist
-                        return None, None
-                
-                try:
-                    loop_temp = asyncio.new_event_loop()
-                    title_db, artist_db = loop_temp.run_until_complete(fetch_db_metadata())
-                    loop_temp.close()
-                    if title_db:
-                        title = title_db
-                    if artist_db:
-                        artist = artist_db
-                except Exception:
-                    pass
-            except Exception as db_err:
-                logger.warning(f"DB metadata fetch failed: {db_err}")
 
         # Primary Configuration: iOS + MWEB + Android player clients to bypass BotGuard
         ydl_opts_primary = {
@@ -125,7 +115,8 @@ async def _get_stream_url(video_id: str) -> str:
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios', 'mweb', 'android'],
-                    'skip': ['hls', 'dash']
+                    'skip': ['hls', 'dash'],
+                    'js_runtime': 'node'
                 }
             },
             'http_headers': {
@@ -172,12 +163,16 @@ async def _get_stream_url(video_id: str) -> str:
         # This will use the bgutil-pot local provider service (running on port 4416) to generate a fresh PO Token dynamically
         # directly on the Render IP address, while authenticating the session with the user's cookies.
         ydl_opts_dyn_auth = {
-            'format': 'bestaudio/best/140/251/18/ba/b',
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['web', 'mweb'],
+                    'js_runtime': 'node'
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -196,12 +191,16 @@ async def _get_stream_url(video_id: str) -> str:
         # Tier 0.2: Dynamic PO Token Provider (Unauthenticated Web Client)
         # Try without cookies in case the cookies themselves are expired or trigger a block.
         ydl_opts_dyn_unauth = {
-            'format': 'bestaudio/best/140/251/18/ba/b',
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['web', 'mweb'],
+                    'js_runtime': 'node'
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -218,7 +217,7 @@ async def _get_stream_url(video_id: str) -> str:
         # Tier 0.5: Manual PO Token & Cookies Fallback (Pre-generated fallback)
         if po_token and visitor_data:
             ydl_opts_manual = {
-                'format': 'bestaudio/best/140/251/18/ba/b',
+                'format': 'bestaudio/best',
                 'quiet': True,
                 'no_warnings': True,
                 'extractor_args': {
@@ -229,7 +228,8 @@ async def _get_stream_url(video_id: str) -> str:
                             f'web.player+{po_token}',
                             f'mweb.gvs+{po_token}'
                         ],
-                        'visitor_data': visitor_data
+                        'visitor_data': visitor_data,
+                        'js_runtime': 'node'
                     }
                 }
             }
@@ -254,7 +254,8 @@ async def _get_stream_url(video_id: str) -> str:
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded', 'android'],
-                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios']
+                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios'],
+                    'js_runtime': 'node'
                 }
             }
         }
@@ -277,7 +278,8 @@ async def _get_stream_url(video_id: str) -> str:
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded', 'android'],
-                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios']
+                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios'],
+                    'js_runtime': 'node'
                 }
             }
         }
@@ -300,7 +302,8 @@ async def _get_stream_url(video_id: str) -> str:
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['tv_embedded', 'android_vr', 'mweb', 'android']
+                    'player_client': ['tv_embedded', 'android_vr', 'mweb', 'android'],
+                    'js_runtime': 'node'
                 }
             }
         }
@@ -334,43 +337,7 @@ async def _get_stream_url(video_id: str) -> str:
         # If all YouTube methods are blocked, we retrieve track metadata (title/artist)
         # and search SoundCloud for a direct progressive MP3 stream.
         try:
-            logger.info(f"[SoundCloud Fallback] YouTube blocked. Fetching metadata for {video_id} to query SoundCloud...")
-            title = None
-            artist = None
-            
-            # 1. Fetch metadata from YTMusic
-            ytmusic = get_ytmusic()
-            if ytmusic:
-                try:
-                    song_details = ytmusic.get_song(video_id)
-                    if song_details and "videoDetails" in song_details:
-                        details = song_details["videoDetails"]
-                        title = details.get("title")
-                        artist = details.get("author")
-                except Exception as meta_err:
-                    logger.warning(f"[SoundCloud Fallback] Failed to fetch YTMusic metadata: {meta_err}")
-            
-            # 2. If YTMusic failed, query local database catalog
-            if not title or not artist:
-                try:
-                    from app.db.database import AsyncSessionLocal, SongCatalog
-                    from sqlalchemy import select
-                    async def fetch_db_metadata():
-                        async with AsyncSessionLocal() as session:
-                            res = await session.execute(select(SongCatalog).where(SongCatalog.id == video_id))
-                            row = res.scalar_one_or_none()
-                            if row:
-                                return row.title, row.artist
-                            return None, None
-                    
-                    try:
-                        loop_temp = asyncio.new_event_loop()
-                        title, artist = loop_temp.run_until_complete(fetch_db_metadata())
-                        loop_temp.close()
-                    except Exception:
-                        pass
-                except Exception as db_err:
-                    logger.warning(f"[SoundCloud Fallback] DB metadata fetch failed: {db_err}")
+            logger.info(f"[SoundCloud Fallback] YouTube blocked. Using metadata for {video_id} (title={title}, artist={artist}) to query SoundCloud...")
 
             if title:
                 search_queries = []
