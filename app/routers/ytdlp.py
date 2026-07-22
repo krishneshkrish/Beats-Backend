@@ -75,8 +75,56 @@ async def _get_stream_url(video_id: str) -> str:
         cookies_path = "cookies.txt"
         cookiefile = cookies_path if os.path.exists(cookies_path) else None
 
-        # Primary attempt: TV embedded + Android VR + Mobile clients
+        # Tier 1: TV Embedded + Android (Unauthenticated)
+        # Completely skips web/iOS clients to bypass YouTube's BotGuard checking on cloud IPs
         ydl_opts_1 = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded', 'android'],
+                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios']
+                }
+            }
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_1) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                url = info.get('url')
+                if url and "googlevideo.com" in url:
+                    return url
+        except Exception as e:
+            logger.warning(f"[yt-dlp Tier 1 (TV/Android unauth) failed for {video_id}]: {e}")
+
+        # Tier 2: TV Embedded + Android (With Cookies)
+        # If Tier 1 failed (e.g. region restriction or age block), try with cookies but still skip BotGuard clients
+        ydl_opts_2 = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded', 'android'],
+                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios']
+                }
+            }
+        }
+        if cookiefile:
+            ydl_opts_2['cookiefile'] = cookiefile
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_2) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                url = info.get('url')
+                if url and "googlevideo.com" in url:
+                    return url
+        except Exception as e:
+            logger.warning(f"[yt-dlp Tier 2 (TV/Android auth) failed for {video_id}]: {e}")
+
+        # Tier 3: Standard fallback with cookies (if present)
+        ydl_opts_3 = {
             'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
@@ -87,36 +135,16 @@ async def _get_stream_url(video_id: str) -> str:
             }
         }
         if cookiefile:
-            ydl_opts_1['cookiefile'] = cookiefile
+            ydl_opts_3['cookiefile'] = cookiefile
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts_1) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url and "googlevideo.com" in url:
-                    return url
-        except Exception as e:
-            logger.warning(f"[yt-dlp primary extract failed for {video_id}]: {e}")
-
-        # Fallback attempt: Unauthenticated TV & Android VR embed client sequence (bypasses cloud IP bot detection)
-        ydl_opts_2 = {
-            'format': 'bestaudio/best/140/251/18/ba/b',
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['tv_embedded', 'android_vr', 'web_embedded', 'mweb']
-                }
-            }
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_2) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts_3) as ydl:
                 info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
                 url = info.get('url')
                 if url:
                     return url
         except Exception as e:
-            logger.error(f"[yt-dlp fallback extract failed for {video_id}]: {e}")
+            logger.error(f"[yt-dlp Tier 3 fallback failed for {video_id}]: {e}")
 
         return f"https://www.youtube.com/watch?v={video_id}"
 
