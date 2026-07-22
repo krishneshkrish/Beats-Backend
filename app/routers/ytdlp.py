@@ -75,6 +75,37 @@ async def _get_stream_url(video_id: str) -> str:
         cookies_path = "cookies.txt"
         cookiefile = cookies_path if os.path.exists(cookies_path) else None
 
+        # Optional: User-provided Proof of Origin (PO) Token and Visitor Data from environment variables
+        # This is the most reliable way to bypass YouTube's BotGuard on cloud servers.
+        po_token = os.environ.get("YT_PO_TOKEN")
+        visitor_data = os.environ.get("YT_VISITOR_DATA")
+
+        # Tier 0: Custom PO Token (if supplied by environment)
+        if po_token and visitor_data:
+            ydl_opts_0 = {
+                'format': 'bestaudio/best/140/251/18/ba/b',
+                'quiet': True,
+                'no_warnings': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web', 'mweb', 'tv_embedded', 'android'],
+                        'po_token': po_token,
+                        'visitor_data': visitor_data
+                    }
+                }
+            }
+            if cookiefile:
+                ydl_opts_0['cookiefile'] = cookiefile
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_0) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                    url = info.get('url')
+                    if url and "googlevideo.com" in url:
+                        logger.info(f"[yt-dlp Tier 0 (PO Token auth) succeeded for {video_id}]")
+                        return url
+            except Exception as e:
+                logger.warning(f"[yt-dlp Tier 0 (PO Token auth) failed for {video_id}]: {e}")
+
         # Tier 1: TV Embedded + Android (Unauthenticated)
         # Completely skips web/iOS clients to bypass YouTube's BotGuard checking on cloud IPs
         ydl_opts_1 = {

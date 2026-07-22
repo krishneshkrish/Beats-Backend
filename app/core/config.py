@@ -73,12 +73,8 @@ def setup_oauth_file() -> None:
     # ── cookies.txt ───────────────────────────────────────────────────────────
     path = settings.YT_COOKIES_PATH
     
-    # Priority 1: Check if Render loaded it natively via Secret Files
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        logger.info(f"✅ cookies.txt securely loaded at {path}")
-        
-    # Priority 2: Fallback to base64 variable only if file is missing
-    elif settings.COOKIES_B64 and settings.COOKIES_B64.strip():
+    # Priority 1: Check if updated base64 variable is provided to overwrite/write the file
+    if settings.COOKIES_B64 and settings.COOKIES_B64.strip():
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             decoded = base64.b64decode(settings.COOKIES_B64)
@@ -88,5 +84,9 @@ def setup_oauth_file() -> None:
         except Exception as e:
             logger.error(f"❌ Failed to write cookies.txt from base64 string: {e}")
             
+    # Priority 2: Use existing file (e.g. Render Secret File)
+    elif os.path.exists(path) and os.path.getsize(path) > 0:
+        logger.info(f"✅ cookies.txt securely loaded at {path}")
+        
     else:
         logger.warning("⚠️  No cookies.txt found — yt-dlp running without auth (bot detection risk on cloud)")
