@@ -105,18 +105,24 @@ async def _get_stream_url(video_id: str) -> str:
         cookies_path = "cookies.txt"
         cookiefile = cookies_path if os.path.exists(cookies_path) else None
 
-        # Primary Configuration: iOS + MWEB + Android player clients to bypass BotGuard
+        po_token = os.environ.get("YT_PO_TOKEN", "MlXZB1SIORN-4Nk5uVP-8shKK-uQhZ51L2kHh52sl5n5oTFyWvsbU7j325eSyErULr9zYq2Kf_y0JuWLpGkAFrx5B3C95wHfKDtz6LqB4uxOQfqX_ZPW")
+        visitor_data = os.environ.get("YT_VISITOR_DATA", "Cgt4TEFISGVKN0h1WSjhr4HTBjIKCgJJThIEGgAga2LfAgrcAjIwLllUPXFSNXprN0xuYXdQWGEwTk82MUtWVk15S0xTVVVNVEo4Z2FyUzUzSnlkelhMX2tXc1FkTU8xZnF6RzJ0NXVrLU83aklOZjlZcGUwY1dUS0tCWWlJWkZudV95Skh4OEVVallXaFc3VWtIRzF4R3lqVG5NQkpySUI1VndJUm5YT3gtWEN1Q2JvV1JYUzk0Z29lNHY1eTNkZjNHa0NGdUM2d01CNjRrc3doUVBFSm5WMnFjbU9wT2xSU2VSMm9kdjJuWjNBMkxacXpWN08wUzZBUDdEYTlVTWFYMG9iSkpJdFV4TENITHItTXYyWmZuWl81SUpyMGxuQVBGR3JEN2lYeHJlVTV5Zk9UYW1fVmpEZzQ1czk3VExGbUpUZ085ck12bi1jTFdWYU5ZVmVLejVLcUx3dUVUSzQzWHhzbGE0T0JwV0RoemxBbGZhMXRTUnQtV2VQbFY2Zw%3D%3D")
+
+        # Define direct lookup options
         ydl_opts_primary = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
             'nocheckcertificate': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'mweb', 'android'],
+                    'player_client': ['ios', 'android', 'mweb', 'tv_embedded'],
                     'skip': ['hls', 'dash'],
                     'js_runtime': 'node'
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': 'http://127.0.0.1:4416'
                 }
             },
             'http_headers': {
@@ -126,131 +132,56 @@ async def _get_stream_url(video_id: str) -> str:
         if cookiefile:
             ydl_opts_primary['cookiefile'] = cookiefile
 
-        # Try Direct Lookup
-        try:
-            logger.info(f"[yt-dlp Primary Direct Lookup] Attempting extraction for {video_id}...")
-            with yt_dlp.YoutubeDL(ydl_opts_primary) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url:
-                    logger.info(f"[yt-dlp Primary Direct Lookup Succeeded for {video_id}]")
-                    return url
-        except (DownloadError, ExtractorError) as err:
-            logger.warning(f"[yt-dlp Primary Direct Lookup Failed for {video_id}]: {err}. Trying Fallback Search & Retry...")
-            
-            # Fallback Search & Retry Pipeline
-            search_query = f"ytsearch1:{artist} - {title} Audio" if artist and title else f"ytsearch1:{title} Audio" if title else None
-            if search_query:
-                try:
-                    logger.info(f"[yt-dlp Search Retry] Searching for '{search_query}'...")
-                    with yt_dlp.YoutubeDL(ydl_opts_primary) as ydl:
-                        info = ydl.extract_info(search_query, download=False)
-                        if info and 'entries' in info and info['entries']:
-                            entry = info['entries'][0]
-                            url = entry.get('url')
-                            if url:
-                                logger.info(f"[yt-dlp Search Retry Succeeded for query '{search_query}']")
-                                return url
-                except Exception as search_err:
-                    logger.error(f"[yt-dlp Search Retry Failed for query '{search_query}']: {search_err}")
-
-        # Optional: User-provided Proof of Origin (PO) Token and Visitor Data from environment variables
-        # This is the most reliable way to bypass YouTube's BotGuard on cloud servers.
-        po_token = os.environ.get("YT_PO_TOKEN", "MlXZB1SIORN-4Nk5uVP-8shKK-uQhZ51L2kHh52sl5n5oTFyWvsbU7j325eSyErULr9zYq2Kf_y0JuWLpGkAFrx5B3C95wHfKDtz6LqB4uxOQfqX_ZPW")
-        visitor_data = os.environ.get("YT_VISITOR_DATA", "Cgt4TEFISGVKN0h1WSjhr4HTBjIKCgJJThIEGgAga2LfAgrcAjIwLllUPXFSNXprN0xuYXdQWGEwTk82MUtWVk15S0xTVVVNVEo4Z2FyUzUzSnlkelhMX2tXc1FkTU8xZnF6RzJ0NXVrLU83aklOZjlZcGUwY1dUS0tCWWlJWkZudV95Skh4OEVVallXaFc3VWtIRzF4R3lqVG5NQkpySUI1VndJUm5YT3gtWEN1Q2JvV1JYUzk0Z29lNHY1eTNkZjNHa0NGdUM2d01CNjRrc3doUVBFSm5WMnFjbU9wT2xSU2VSMm9kdjJuWjNBMkxacXpWN08wUzZBUDdEYTlVTWFYMG9iSkpJdFV4TENITHItTXYyWmZuWl81SUpyMGxuQVBGR3JEN2lYeHJlVTV5Zk9UYW1fVmpEZzQ1czk3VExGbUpUZ085ck12bi1jTFdWYU5ZVmVLejVLcUx3dUVUSzQzWHhzbGE0T0JwV0RoemxBbGZhMXRTUnQtV2VQbFY2Zw%3D%3D")
-
-        # Tier 0: Dynamic PO Token Provider with Cookies (Authenticated Web Client)
-        # This will use the bgutil-pot local provider service (running on port 4416) to generate a fresh PO Token dynamically
-        # directly on the Render IP address, while authenticating the session with the user's cookies.
-        ydl_opts_dyn_auth = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web', 'mweb'],
-                    'js_runtime': 'node'
-                },
-                'youtubepot-bgutilhttp': {
-                    'base_url': 'http://127.0.0.1:4416'
-                }
-            }
-        }
-        if cookiefile:
-            ydl_opts_dyn_auth['cookiefile'] = cookiefile
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_dyn_auth) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url and "googlevideo.com" in url:
-                    logger.info(f"[yt-dlp Tier 0 (Dynamic PO Token + Cookies) succeeded for {video_id}]")
-                    return url
-        except Exception as e:
-            logger.warning(f"[yt-dlp Tier 0 (Dynamic PO Token + Cookies) failed for {video_id}]: {e}")
-
-        # Tier 0.2: Dynamic PO Token Provider (Unauthenticated Web Client)
-        # Try without cookies in case the cookies themselves are expired or trigger a block.
         ydl_opts_dyn_unauth = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['web', 'mweb'],
+                    'player_client': ['ios', 'android', 'mweb', 'tv_embedded'],
+                    'skip': ['hls', 'dash'],
                     'js_runtime': 'node'
                 },
                 'youtubepot-bgutilhttp': {
                     'base_url': 'http://127.0.0.1:4416'
                 }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
             }
         }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_dyn_unauth) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url and "googlevideo.com" in url:
-                    logger.info(f"[yt-dlp Tier 0.2 (Dynamic PO Token Unauth) succeeded for {video_id}]")
-                    return url
-        except Exception as e:
-            logger.warning(f"[yt-dlp Tier 0.2 (Dynamic PO Token Unauth) failed for {video_id}]: {e}")
 
-        # Tier 0.5: Manual PO Token & Cookies Fallback (Pre-generated fallback)
-        if po_token and visitor_data:
-            ydl_opts_manual = {
-                'format': 'bestaudio/best',
-                'quiet': True,
-                'no_warnings': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web', 'mweb'],
-                        'po_token': [
-                            f'web.gvs+{po_token}',
-                            f'web.player+{po_token}',
-                            f'mweb.gvs+{po_token}'
-                        ],
-                        'visitor_data': visitor_data,
-                        'js_runtime': 'node'
-                    }
-                }
-            }
-            if cookiefile:
-                ydl_opts_manual['cookiefile'] = cookiefile
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts_manual) as ydl:
-                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                    url = info.get('url')
-                    if url and "googlevideo.com" in url:
-                        logger.info(f"[yt-dlp Tier 0.5 (Manual PO Token auth) succeeded for {video_id}]")
-                        return url
-            except Exception as e:
-                logger.warning(f"[yt-dlp Tier 0.5 (Manual PO Token auth) failed for {video_id}]: {e}")
-
-        # Tier 1: TV Embedded + Android (Unauthenticated)
-        # Completely skips web/iOS clients to bypass YouTube's BotGuard checking on cloud IPs
-        ydl_opts_1 = {
+        ydl_opts_manual = {
             'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'mweb', 'tv_embedded'],
+                    'po_token': [
+                        f'ios.gvs+{po_token}',
+                        f'android.gvs+{po_token}',
+                        f'mweb.gvs+{po_token}',
+                        f'tv_embedded.gvs+{po_token}'
+                    ],
+                    'visitor_data': visitor_data,
+                    'js_runtime': 'node'
+                }
+            }
+        }
+        if cookiefile:
+            ydl_opts_manual['cookiefile'] = cookiefile
+
+        ydl_opts_tv_unauth = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded', 'android'],
@@ -260,21 +191,12 @@ async def _get_stream_url(video_id: str) -> str:
             }
         }
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_1) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url and "googlevideo.com" in url:
-                    return url
-        except Exception as e:
-            logger.warning(f"[yt-dlp Tier 1 (TV/Android unauth) failed for {video_id}]: {e}")
-
-        # Tier 2: TV Embedded + Android (With Cookies)
-        # If Tier 1 failed (e.g. region restriction or age block), try with cookies but still skip BotGuard clients
-        ydl_opts_2 = {
+        ydl_opts_tv_auth = {
             'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded', 'android'],
@@ -284,22 +206,14 @@ async def _get_stream_url(video_id: str) -> str:
             }
         }
         if cookiefile:
-            ydl_opts_2['cookiefile'] = cookiefile
+            ydl_opts_tv_auth['cookiefile'] = cookiefile
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_2) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url and "googlevideo.com" in url:
-                    return url
-        except Exception as e:
-            logger.warning(f"[yt-dlp Tier 2 (TV/Android auth) failed for {video_id}]: {e}")
-
-        # Tier 3: Standard fallback with cookies (if present)
-        ydl_opts_3 = {
+        ydl_opts_fallback_cookies = {
             'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
             'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded', 'android_vr', 'mweb', 'android'],
@@ -308,20 +222,52 @@ async def _get_stream_url(video_id: str) -> str:
             }
         }
         if cookiefile:
-            ydl_opts_3['cookiefile'] = cookiefile
+            ydl_opts_fallback_cookies['cookiefile'] = cookiefile
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_3) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url:
-                    return url
-        except Exception as e:
-            logger.error(f"[yt-dlp Tier 3 fallback failed for {video_id}]: {e}")
+        # 1. Try Direct Lookup across all configurations
+        direct_tiers = [
+            ("Primary Direct Lookup (Dynamic POT + Cookies)", ydl_opts_primary),
+            ("Tier 0.2 Direct Lookup (Dynamic POT Unauth)", ydl_opts_dyn_unauth),
+            ("Tier 0.5 Direct Lookup (Manual POT + Cookies)", ydl_opts_manual),
+            ("Tier 1 Direct Lookup (TV/Android Unauth)", ydl_opts_tv_unauth),
+            ("Tier 2 Direct Lookup (TV/Android Auth)", ydl_opts_tv_auth),
+            ("Tier 3 Direct Lookup (Standard Fallback)", ydl_opts_fallback_cookies),
+        ]
 
-        # Tier 4: pytubefix Fallback
-        # Since pytubefix generates PO Tokens dynamically on the host IP using Node.js,
-        # it is highly resilient against cloud-IP BotGuard blocks.
+        for tier_name, opts in direct_tiers:
+            try:
+                logger.info(f"[yt-dlp Direct Lookup] Attempting {tier_name} for {video_id}...")
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                    url = info.get('url')
+                    if url and "googlevideo.com" in url:
+                        logger.info(f"[yt-dlp Direct Lookup Succeeded] Resolved via {tier_name} for {video_id}")
+                        return url
+            except Exception as e:
+                logger.warning(f"[yt-dlp Direct Lookup Failed] {tier_name} failed for {video_id}: {e}")
+
+        # 2. Try Fallback Search & Retry Pipeline
+        search_query = f"ytsearch1:{artist} - {title} Audio" if artist and title else f"ytsearch1:{title} Audio" if title else None
+        if search_query:
+            search_tiers = [
+                ("Search via Dynamic POT Unauth", ydl_opts_dyn_unauth),
+                ("Search via Primary (Dynamic POT + Cookies)", ydl_opts_primary),
+            ]
+            for tier_name, opts in search_tiers:
+                try:
+                    logger.info(f"[yt-dlp Search Retry] Attempting '{search_query}' using {tier_name}...")
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(search_query, download=False)
+                        if info and 'entries' in info and info['entries']:
+                            entry = info['entries'][0]
+                            url = entry.get('url')
+                            if url and "googlevideo.com" in url:
+                                logger.info(f"[yt-dlp Search Retry Succeeded] Resolved via {tier_name} for query '{search_query}'")
+                                return url
+                except Exception as search_err:
+                    logger.error(f"[yt-dlp Search Retry Failed] {tier_name} failed for query '{search_query}': {search_err}")
+
+        # 3. pytubefix Fallback
         try:
             from pytubefix import YouTube as PyTubeYouTube
             logger.info(f"[pytubefix] Attempting dynamic extraction fallback for {video_id}...")
@@ -333,12 +279,9 @@ async def _get_stream_url(video_id: str) -> str:
         except Exception as py_err:
             logger.error(f"[pytubefix failed for {video_id}]: {py_err}")
 
-        # Tier 5: SoundCloud Search and Extraction Fallback
-        # If all YouTube methods are blocked, we retrieve track metadata (title/artist)
-        # and search SoundCloud for a direct progressive MP3 stream.
+        # 4. SoundCloud Search and Extraction Fallback
         try:
             logger.info(f"[SoundCloud Fallback] YouTube blocked. Using metadata for {video_id} (title={title}, artist={artist}) to query SoundCloud...")
-
             if title:
                 search_queries = []
                 if artist:
@@ -716,4 +659,29 @@ async def stream_proxy(request: Request, url: str = Query(...)):
         logger.error(f"[Stream Proxy Exception] {e}")
         await client.aclose()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/pot-status")
+async def get_pot_status():
+    import httpx
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("http://127.0.0.1:4416/ping", timeout=2.0)
+            return {
+                "reachable": True,
+                "status_code": resp.status_code,
+                "body": resp.text
+            }
+    except Exception as e:
+        from app.core import pot_provider
+        proc_status = "unknown"
+        if pot_provider._process is not None:
+            poll = pot_provider._process.poll()
+            proc_status = f"running (poll={poll})" if poll is None else f"exited (code={poll})"
+        return {
+            "reachable": False,
+            "error": str(e),
+            "process_state": proc_status
+        }
+
 
