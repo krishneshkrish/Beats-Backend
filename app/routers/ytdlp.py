@@ -117,7 +117,7 @@ async def _get_stream_url(video_id: str) -> str:
 
         # Primary Configuration: iOS + MWEB + Android player clients to bypass BotGuard
         ydl_opts_primary = {
-            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
@@ -458,8 +458,16 @@ async def stream_audio(video_id: str, request: Request):
         logger.warning(f"[Stream Proxy] Stream url for {video_id} failed or not extracted. Using fallback stream.")
         stream_url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
         
+    # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
+    # Android client needs the official youtube Android client app agent to avoid 403 Forbidden.
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    if "c=ANDROID" in stream_url:
+        user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
+    elif "c=IOS" in stream_url or "c=APPLE_IV" in stream_url:
+        user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": user_agent
     }
     
     range_header = request.headers.get("range")
@@ -504,6 +512,7 @@ async def stream_audio(video_id: str, request: Request):
         logger.error(f"[Streaming Proxy Exception] {e}")
         await client.aclose()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/search", response_model=list[Song])
@@ -673,10 +682,25 @@ async def stream_proxy(request: Request, url: str = Query(...)):
     Proxies raw googlevideo.com (or other) audio URLs to bypass client-side CORS issues,
     forwarding HTTP Range headers and returning a StreamingResponse.
     """
+    # Reconstruct the full URL defensively if it was not URL-encoded by the caller
+    query_string = request.url.query
+    if query_string.startswith("url="):
+        url = query_string[4:]
+        from urllib.parse import unquote
+        url = unquote(url)
+
     logger.info(f"[Stream Proxy] Proxying URL: {url[:100]}...")
     
+    # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
+    # Android client needs the official youtube Android client app agent to avoid 403 Forbidden.
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    if "c=ANDROID" in url:
+        user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
+    elif "c=IOS" in url or "c=APPLE_IV" in url:
+        user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
+        
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": user_agent
     }
     
     range_header = request.headers.get("range")
