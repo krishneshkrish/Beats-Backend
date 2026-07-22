@@ -220,6 +220,36 @@ async def _get_stream_url(video_id: str) -> str:
         if cookiefile:
             ydl_opts_manual['cookiefile'] = cookiefile
 
+        ydl_opts_tv_embedded_only = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded'],
+                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios', 'android'],
+                    'js_runtime': 'node'
+                }
+            }
+        }
+
+        ydl_opts_android_vr_only = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android_vr'],
+                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios', 'android', 'tv_embedded'],
+                    'js_runtime': 'node'
+                }
+            }
+        }
+
         ydl_opts_tv_unauth = {
             'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
@@ -282,6 +312,8 @@ async def _get_stream_url(video_id: str) -> str:
             ("Primary Direct Lookup (Dynamic POT + Cookies)", ydl_opts_primary),
             ("Tier 0.2 Direct Lookup (Dynamic POT Unauth)", ydl_opts_dyn_unauth),
             ("Tier 0.5 Direct Lookup (Manual POT + Cookies)", ydl_opts_manual),
+            ("Tier 0.7 TV Embedded Bypass (No POT)", ydl_opts_tv_embedded_only),
+            ("Tier 0.8 Android VR Bypass (No POT)", ydl_opts_android_vr_only),
             ("Tier 1 Direct Lookup (TV/Android Unauth)", ydl_opts_tv_unauth),
             ("Tier 2 Direct Lookup (TV/Android Auth)", ydl_opts_tv_auth),
             ("Tier 3 Direct Lookup (Standard Fallback)", ydl_opts_fallback_cookies),
