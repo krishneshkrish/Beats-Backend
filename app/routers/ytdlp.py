@@ -81,15 +81,62 @@ async def _get_stream_url(video_id: str) -> str:
         po_token = os.environ.get("YT_PO_TOKEN", "MlXZB1SIORN-4Nk5uVP-8shKK-uQhZ51L2kHh52sl5n5oTFyWvsbU7j325eSyErULr9zYq2Kf_y0JuWLpGkAFrx5B3C95wHfKDtz6LqB4uxOQfqX_ZPW")
         visitor_data = os.environ.get("YT_VISITOR_DATA", "Cgt4TEFISGVKN0h1WSjhr4HTBjIKCgJJThIEGgAga2LfAgrcAjIwLllUPXFSNXprN0xuYXdQWGEwTk82MUtWVk15S0xTVVVNVEo4Z2FyUzUzSnlkelhMX2tXc1FkTU8xZnF6RzJ0NXVrLU83aklOZjlZcGUwY1dUS0tCWWlJWkZudV95Skh4OEVVallXaFc3VWtIRzF4R3lqVG5NQkpySUI1VndJUm5YT3gtWEN1Q2JvV1JYUzk0Z29lNHY1eTNkZjNHa0NGdUM2d01CNjRrc3doUVBFSm5WMnFjbU9wT2xSU2VSMm9kdjJuWjNBMkxacXpWN08wUzZBUDdEYTlVTWFYMG9iSkpJdFV4TENITHItTXYyWmZuWl81SUpyMGxuQVBGR3JEN2lYeHJlVTV5Zk9UYW1fVmpEZzQ1czk3VExGbUpUZ085ck12bi1jTFdWYU5ZVmVLejVLcUx3dUVUSzQzWHhzbGE0T0JwV0RoemxBbGZhMXRTUnQtV2VQbFY2Zw%3D%3D")
 
-        # Tier 0: Custom PO Token (if supplied by environment)
+        # Tier 0: Dynamic PO Token Provider with Cookies (Authenticated Web Client)
+        # This will use the bgutil-pot local provider service (running on port 4416) to generate a fresh PO Token dynamically
+        # directly on the Render IP address, while authenticating the session with the user's cookies.
+        ydl_opts_dyn_auth = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web', 'mweb'],
+                }
+            }
+        }
+        if cookiefile:
+            ydl_opts_dyn_auth['cookiefile'] = cookiefile
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_dyn_auth) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                url = info.get('url')
+                if url and "googlevideo.com" in url:
+                    logger.info(f"[yt-dlp Tier 0 (Dynamic PO Token + Cookies) succeeded for {video_id}]")
+                    return url
+        except Exception as e:
+            logger.warning(f"[yt-dlp Tier 0 (Dynamic PO Token + Cookies) failed for {video_id}]: {e}")
+
+        # Tier 0.2: Dynamic PO Token Provider (Unauthenticated Web Client)
+        # Try without cookies in case the cookies themselves are expired or trigger a block.
+        ydl_opts_dyn_unauth = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web', 'mweb'],
+                }
+            }
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_dyn_unauth) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                url = info.get('url')
+                if url and "googlevideo.com" in url:
+                    logger.info(f"[yt-dlp Tier 0.2 (Dynamic PO Token Unauth) succeeded for {video_id}]")
+                    return url
+        except Exception as e:
+            logger.warning(f"[yt-dlp Tier 0.2 (Dynamic PO Token Unauth) failed for {video_id}]: {e}")
+
+        # Tier 0.5: Manual PO Token & Cookies Fallback (Pre-generated fallback)
         if po_token and visitor_data:
-            ydl_opts_0 = {
+            ydl_opts_manual = {
                 'format': 'bestaudio/best/140/251/18/ba/b',
                 'quiet': True,
                 'no_warnings': True,
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['web', 'mweb', 'tv_embedded', 'android'],
+                        'player_client': ['web', 'mweb'],
                         'po_token': [
                             f'web.gvs+{po_token}',
                             f'web.player+{po_token}',
@@ -100,47 +147,16 @@ async def _get_stream_url(video_id: str) -> str:
                 }
             }
             if cookiefile:
-                ydl_opts_0['cookiefile'] = cookiefile
+                ydl_opts_manual['cookiefile'] = cookiefile
             try:
-                with yt_dlp.YoutubeDL(ydl_opts_0) as ydl:
+                with yt_dlp.YoutubeDL(ydl_opts_manual) as ydl:
                     info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
                     url = info.get('url')
                     if url and "googlevideo.com" in url:
-                        logger.info(f"[yt-dlp Tier 0 (PO Token auth) succeeded for {video_id}]")
+                        logger.info(f"[yt-dlp Tier 0.5 (Manual PO Token auth) succeeded for {video_id}]")
                         return url
             except Exception as e:
-                logger.warning(f"[yt-dlp Tier 0 (PO Token auth) failed for {video_id}]: {e}")
-
-        # Tier 0.5: Authenticated Web Client with cookies (standard desktop/mobile Chrome emulation)
-        # Since the user provided authenticated cookies, we use the web/mweb clients so YouTube can see the logged-in session.
-        if cookiefile:
-            ydl_opts_auth_web = {
-                'format': 'bestaudio/best/140/251/18/ba/b',
-                'quiet': True,
-                'no_warnings': True,
-                'cookiefile': cookiefile,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web', 'mweb'],
-                    }
-                }
-            }
-            if po_token and visitor_data:
-                ydl_opts_auth_web['extractor_args']['youtube']['po_token'] = [
-                    f'web.gvs+{po_token}',
-                    f'web.player+{po_token}',
-                    f'mweb.gvs+{po_token}'
-                ]
-                ydl_opts_auth_web['extractor_args']['youtube']['visitor_data'] = visitor_data
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts_auth_web) as ydl:
-                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                    url = info.get('url')
-                    if url and "googlevideo.com" in url:
-                        logger.info(f"[yt-dlp Tier 0.5 (Authenticated Web Client) succeeded for {video_id}]")
-                        return url
-            except Exception as e:
-                logger.warning(f"[yt-dlp Tier 0.5 (Authenticated Web Client) failed for {video_id}]: {e}")
+                logger.warning(f"[yt-dlp Tier 0.5 (Manual PO Token auth) failed for {video_id}]: {e}")
 
         # Tier 1: TV Embedded + Android (Unauthenticated)
         # Completely skips web/iOS clients to bypass YouTube's BotGuard checking on cloud IPs

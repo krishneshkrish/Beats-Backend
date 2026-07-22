@@ -9,3 +9,7 @@ data/features/
 oauth.json
 *.egg-info/
 .DS_Store
+bgutil-pot-*
+libbgutil_ytdlp_pot_provider-*
+*.db
+
