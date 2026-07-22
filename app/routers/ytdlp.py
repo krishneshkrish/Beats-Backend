@@ -77,8 +77,9 @@ async def _get_stream_url(video_id: str) -> str:
 
         # Optional: User-provided Proof of Origin (PO) Token and Visitor Data from environment variables
         # This is the most reliable way to bypass YouTube's BotGuard on cloud servers.
-        po_token = os.environ.get("YT_PO_TOKEN")
-        visitor_data = os.environ.get("YT_VISITOR_DATA")
+        # Code fallbacks are pre-generated to make this work out of the box on Render.
+        po_token = os.environ.get("YT_PO_TOKEN", "MlXZB1SIORN-4Nk5uVP-8shKK-uQhZ51L2kHh52sl5n5oTFyWvsbU7j325eSyErULr9zYq2Kf_y0JuWLpGkAFrx5B3C95wHfKDtz6LqB4uxOQfqX_ZPW")
+        visitor_data = os.environ.get("YT_VISITOR_DATA", "Cgt4TEFISGVKN0h1WSjhr4HTBjIKCgJJThIEGgAga2LfAgrcAjIwLllUPXFSNXprN0xuYXdQWGEwTk82MUtWVk15S0xTVVVNVEo4Z2FyUzUzSnlkelhMX2tXc1FkTU8xZnF6RzJ0NXVrLU83aklOZjlZcGUwY1dUS0tCWWlJWkZudV95Skh4OEVVallXaFc3VWtIRzF4R3lqVG5NQkpySUI1VndJUm5YT3gtWEN1Q2JvV1JYUzk0Z29lNHY1eTNkZjNHa0NGdUM2d01CNjRrc3doUVBFSm5WMnFjbU9wT2xSU2VSMm9kdjJuWjNBMkxacXpWN08wUzZBUDdEYTlVTWFYMG9iSkpJdFV4TENITHItTXYyWmZuWl81SUpyMGxuQVBGR3JEN2lYeHJlVTV5Zk9UYW1fVmpEZzQ1czk3VExGbUpUZ085ck12bi1jTFdWYU5ZVmVLejVLcUx3dUVUSzQzWHhzbGE0T0JwV0RoemxBbGZhMXRTUnQtV2VQbFY2Zw%3D%3D")
 
         # Tier 0: Custom PO Token (if supplied by environment)
         if po_token and visitor_data:
