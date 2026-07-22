@@ -90,7 +90,11 @@ async def _get_stream_url(video_id: str) -> str:
                 'extractor_args': {
                     'youtube': {
                         'player_client': ['web', 'mweb', 'tv_embedded', 'android'],
-                        'po_token': po_token,
+                        'po_token': [
+                            f'web.gvs+{po_token}',
+                            f'web.player+{po_token}',
+                            f'mweb.gvs+{po_token}'
+                        ],
                         'visitor_data': visitor_data
                     }
                 }
@@ -106,6 +110,37 @@ async def _get_stream_url(video_id: str) -> str:
                         return url
             except Exception as e:
                 logger.warning(f"[yt-dlp Tier 0 (PO Token auth) failed for {video_id}]: {e}")
+
+        # Tier 0.5: Authenticated Web Client with cookies (standard desktop/mobile Chrome emulation)
+        # Since the user provided authenticated cookies, we use the web/mweb clients so YouTube can see the logged-in session.
+        if cookiefile:
+            ydl_opts_auth_web = {
+                'format': 'bestaudio/best/140/251/18/ba/b',
+                'quiet': True,
+                'no_warnings': True,
+                'cookiefile': cookiefile,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web', 'mweb'],
+                    }
+                }
+            }
+            if po_token and visitor_data:
+                ydl_opts_auth_web['extractor_args']['youtube']['po_token'] = [
+                    f'web.gvs+{po_token}',
+                    f'web.player+{po_token}',
+                    f'mweb.gvs+{po_token}'
+                ]
+                ydl_opts_auth_web['extractor_args']['youtube']['visitor_data'] = visitor_data
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_auth_web) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                    url = info.get('url')
+                    if url and "googlevideo.com" in url:
+                        logger.info(f"[yt-dlp Tier 0.5 (Authenticated Web Client) succeeded for {video_id}]")
+                        return url
+            except Exception as e:
+                logger.warning(f"[yt-dlp Tier 0.5 (Authenticated Web Client) failed for {video_id}]: {e}")
 
         # Tier 1: TV Embedded + Android (Unauthenticated)
         # Completely skips web/iOS clients to bypass YouTube's BotGuard checking on cloud IPs
