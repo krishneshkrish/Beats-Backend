@@ -84,6 +84,8 @@ app.include_router(journey.router)
 app.include_router(search.router)
 app.include_router(ml.router)
 app.include_router(ytdlp.router)
+app.include_router(ytdlp.proxy_router)
+
 
 
 @app.get("/")

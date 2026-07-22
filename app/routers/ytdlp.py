@@ -72,12 +72,99 @@ def get_ytmusic():
 async def _get_stream_url(video_id: str) -> str:
     """Extracts a direct playable audio-only stream URL using yt-dlp with multi-client anti-bot fallback."""
     def extract():
+        from yt_dlp.utils import DownloadError, ExtractorError
         cookies_path = "cookies.txt"
         cookiefile = cookies_path if os.path.exists(cookies_path) else None
 
+        # Resolve track title & artist for the search fallback retry
+        title = None
+        artist = None
+        ytmusic = get_ytmusic()
+        if ytmusic:
+            try:
+                song_details = ytmusic.get_song(video_id)
+                if song_details and "videoDetails" in song_details:
+                    details = song_details["videoDetails"]
+                    title = details.get("title")
+                    artist = details.get("author")
+            except Exception as e:
+                logger.warning(f"Failed to fetch YTMusic metadata: {e}")
+
+        if not title or not artist:
+            try:
+                from app.db.database import AsyncSessionLocal, SongCatalog
+                from sqlalchemy import select
+                async def fetch_db_metadata():
+                    async with AsyncSessionLocal() as session:
+                        res = await session.execute(select(SongCatalog).where(SongCatalog.id == video_id))
+                        row = res.scalar_one_or_none()
+                        if row:
+                            return row.title, row.artist
+                        return None, None
+                
+                try:
+                    loop_temp = asyncio.new_event_loop()
+                    title_db, artist_db = loop_temp.run_until_complete(fetch_db_metadata())
+                    loop_temp.close()
+                    if title_db:
+                        title = title_db
+                    if artist_db:
+                        artist = artist_db
+                except Exception:
+                    pass
+            except Exception as db_err:
+                logger.warning(f"DB metadata fetch failed: {db_err}")
+
+        # Primary Configuration: iOS + MWEB + Android player clients to bypass BotGuard
+        ydl_opts_primary = {
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'mweb', 'android'],
+                    'skip': ['hls', 'dash']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
+            }
+        }
+        if cookiefile:
+            ydl_opts_primary['cookiefile'] = cookiefile
+
+        # Try Direct Lookup
+        try:
+            logger.info(f"[yt-dlp Primary Direct Lookup] Attempting extraction for {video_id}...")
+            with yt_dlp.YoutubeDL(ydl_opts_primary) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                url = info.get('url')
+                if url:
+                    logger.info(f"[yt-dlp Primary Direct Lookup Succeeded for {video_id}]")
+                    return url
+        except (DownloadError, ExtractorError) as err:
+            logger.warning(f"[yt-dlp Primary Direct Lookup Failed for {video_id}]: {err}. Trying Fallback Search & Retry...")
+            
+            # Fallback Search & Retry Pipeline
+            search_query = f"ytsearch1:{artist} - {title} Audio" if artist and title else f"ytsearch1:{title} Audio" if title else None
+            if search_query:
+                try:
+                    logger.info(f"[yt-dlp Search Retry] Searching for '{search_query}'...")
+                    with yt_dlp.YoutubeDL(ydl_opts_primary) as ydl:
+                        info = ydl.extract_info(search_query, download=False)
+                        if info and 'entries' in info and info['entries']:
+                            entry = info['entries'][0]
+                            url = entry.get('url')
+                            if url:
+                                logger.info(f"[yt-dlp Search Retry Succeeded for query '{search_query}']")
+                                return url
+                except Exception as search_err:
+                    logger.error(f"[yt-dlp Search Retry Failed for query '{search_query}']: {search_err}")
+
         # Optional: User-provided Proof of Origin (PO) Token and Visitor Data from environment variables
         # This is the most reliable way to bypass YouTube's BotGuard on cloud servers.
-        # Code fallbacks are pre-generated to make this work out of the box on Render.
         po_token = os.environ.get("YT_PO_TOKEN", "MlXZB1SIORN-4Nk5uVP-8shKK-uQhZ51L2kHh52sl5n5oTFyWvsbU7j325eSyErULr9zYq2Kf_y0JuWLpGkAFrx5B3C95wHfKDtz6LqB4uxOQfqX_ZPW")
         visitor_data = os.environ.get("YT_VISITOR_DATA", "Cgt4TEFISGVKN0h1WSjhr4HTBjIKCgJJThIEGgAga2LfAgrcAjIwLllUPXFSNXprN0xuYXdQWGEwTk82MUtWVk15S0xTVVVNVEo4Z2FyUzUzSnlkelhMX2tXc1FkTU8xZnF6RzJ0NXVrLU83aklOZjlZcGUwY1dUS0tCWWlJWkZudV95Skh4OEVVallXaFc3VWtIRzF4R3lqVG5NQkpySUI1VndJUm5YT3gtWEN1Q2JvV1JYUzk0Z29lNHY1eTNkZjNHa0NGdUM2d01CNjRrc3doUVBFSm5WMnFjbU9wT2xSU2VSMm9kdjJuWjNBMkxacXpWN08wUzZBUDdEYTlVTWFYMG9iSkpJdFV4TENITHItTXYyWmZuWl81SUpyMGxuQVBGR3JEN2lYeHJlVTV5Zk9UYW1fVmpEZzQ1czk3VExGbUpUZ085ck12bi1jTFdWYU5ZVmVLejVLcUx3dUVUSzQzWHhzbGE0T0JwV0RoemxBbGZhMXRTUnQtV2VQbFY2Zw%3D%3D")
 
@@ -575,3 +662,67 @@ async def get_charts(
 async def refresh_stream_url(request: Request, video_id: str = Query(...), source: str = Query(default="youtube")):
     url = f"{request.base_url}api/yt/stream?video_id={video_id}"
     return {"video_id": video_id, "url": url, "source": source}
+
+
+# ── Stream Proxy Router (No prefix for /api/stream-proxy) ────────────────────────
+proxy_router = APIRouter(tags=["stream-proxy"])
+
+@proxy_router.get("/api/stream-proxy")
+async def stream_proxy(request: Request, url: str = Query(...)):
+    """
+    Proxies raw googlevideo.com (or other) audio URLs to bypass client-side CORS issues,
+    forwarding HTTP Range headers and returning a StreamingResponse.
+    """
+    logger.info(f"[Stream Proxy] Proxying URL: {url[:100]}...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
+
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+    
+    async def stream_generator(response_obj):
+        try:
+            async for chunk in response_obj.aiter_bytes(chunk_size=65536):
+                yield chunk
+        finally:
+            await response_obj.aclose()
+            await client.aclose()
+
+    try:
+        req = client.build_request("GET", url, headers=headers)
+        response = await client.send(req, stream=True)
+        
+        if response.status_code >= 400:
+            await response.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=response.status_code, detail="Failed to retrieve stream from source")
+            
+        resp_headers = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=3600",
+        }
+        if "content-range" in response.headers:
+            resp_headers["Content-Range"] = response.headers["content-range"]
+        if "content-length" in response.headers:
+            resp_headers["Content-Length"] = response.headers["content-length"]
+            
+        content_type = response.headers.get("content-type")
+        if not content_type or "audio" not in content_type:
+            content_type = "audio/mp4"
+            
+        return StreamingResponse(
+            stream_generator(response),
+            status_code=response.status_code,
+            media_type=content_type,
+            headers=resp_headers
+        )
+    except Exception as e:
+        logger.error(f"[Stream Proxy Exception] {e}")
+        await client.aclose()
+        raise HTTPException(status_code=500, detail=str(e))
+
