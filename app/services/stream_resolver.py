@@ -190,34 +190,36 @@ async def resolve_soundcloud(title: str, artist: str, target_duration: Optional[
 async def get_metadata(video_id: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
     title, artist, duration = None, None, None
     try:
-        from app.api.yt import get_ytmusic
-        ytmusic = get_ytmusic()
-        if ytmusic:
-            loop = asyncio.get_running_loop()
-            song_details = await loop.run_in_executor(None, ytmusic.get_song, video_id)
-            if song_details and "videoDetails" in song_details:
-                details = song_details["videoDetails"]
-                title = details.get("title")
-                artist = details.get("author")
-                length_str = details.get("lengthSeconds")
-                if length_str:
-                    duration = int(length_str)
-    except Exception as e:
-        logger.warning(f"Failed to fetch YTMusic metadata: {e}")
+        from app.db.database import AsyncSessionLocal, SongCatalog
+        from sqlalchemy import select
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(SongCatalog).where(SongCatalog.id == video_id))
+            row = res.scalar_one_or_none()
+            if row:
+                title = row.title
+                artist = row.artist
+                duration = row.duration
+                logger.info(f"[Metadata Lookup] Resolved {video_id} from DB Catalog: '{title}' by '{artist}' ({duration}s)")
+    except Exception as db_err:
+        logger.warning(f"DB metadata fetch failed: {db_err}")
 
     if not title or not artist:
         try:
-            from app.db.database import AsyncSessionLocal, SongCatalog
-            from sqlalchemy import select
-            async with AsyncSessionLocal() as session:
-                res = await session.execute(select(SongCatalog).where(SongCatalog.id == video_id))
-                row = res.scalar_one_or_none()
-                if row:
-                    title = row.title
-                    artist = row.artist
-                    duration = row.duration
-        except Exception as db_err:
-            logger.warning(f"DB metadata fetch failed: {db_err}")
+            from app.api.yt import get_ytmusic
+            ytmusic = get_ytmusic()
+            if ytmusic:
+                loop = asyncio.get_running_loop()
+                song_details = await loop.run_in_executor(None, ytmusic.get_song, video_id)
+                if song_details and "videoDetails" in song_details:
+                    details = song_details["videoDetails"]
+                    title = details.get("title")
+                    artist = details.get("author")
+                    length_str = details.get("lengthSeconds")
+                    if length_str:
+                        duration = int(length_str)
+                    logger.info(f"[Metadata Lookup] Resolved {video_id} from YTMusic API: '{title}' by '{artist}' ({duration}s)")
+        except Exception as e:
+            logger.warning(f"Failed to fetch YTMusic metadata: {e}")
             
     return title, artist, duration
 
