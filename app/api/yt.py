@@ -265,3 +265,81 @@ async def get_charts(
     except Exception as e:
         logger.warning(f"[Charts] failed: {e}")
         return []
+
+
+# ── CORS Proxy & Refresh Failover Endpoints ───────────────────────────────────
+
+import httpx
+from pydantic import BaseModel
+from typing import Any, Dict, Optional
+
+class ProxyRequest(BaseModel):
+    url: str
+    method: str = "GET"
+    headers: Dict[str, str] = {}
+    body: Optional[Any] = None
+
+@router.post("/proxy")
+async def yt_proxy(req: ProxyRequest):
+    """
+    Lightweight InnerTube API Proxy
+    Routes browser-based metadata/session queries to avoid client CORS blocks.
+    """
+    allowed_domains = ["youtube.com", "googleapis.com", "ytimg.com"]
+    if not any(domain in req.url for domain in allowed_domains):
+         raise HTTPException(status_code=400, detail="Domain not authorized for proxying")
+         
+    try:
+        headers_to_send = {k: v for k, v in req.headers.items() if k.lower() not in ["host", "origin", "referer", "accept-encoding"]}
+        
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            if req.method.upper() == "POST":
+                json_data = None
+                content_data = None
+                if req.body:
+                    if isinstance(req.body, str):
+                        try:
+                            json_data = json.loads(req.body)
+                        except:
+                            content_data = req.body.encode('utf-8')
+                    else:
+                        json_data = req.body
+                res = await client.post(req.url, headers=headers_to_send, json=json_data, content=content_data)
+            else:
+                res = await client.get(req.url, headers=headers_to_send)
+                
+            return Response(
+                content=res.content,
+                status_code=res.status_code,
+                media_type=res.headers.get("content-type")
+            )
+    except Exception as e:
+        logger.error(f"Proxy request failed to {req.url}: {e}")
+        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+
+
+@router.get("/refresh")
+async def refresh_stream(video_id: str, source: str = "youtube"):
+    """
+    Refreshes direct audio stream URL via Piped API instance failover pool.
+    """
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.yt",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.us.to",
+    ]
+    for instance in piped_instances:
+        try:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                res = await client.get(f"{instance}/streams/{video_id}")
+                if res.status_code == 200:
+                    data = res.json()
+                    audio_streams = data.get("audioStreams", [])
+                    if audio_streams:
+                        best_audio = audio_streams[0]
+                        return {"url": best_audio.get("url")}
+        except Exception as e:
+            logger.warning(f"Failed to resolve stream via Piped instance {instance}: {e}")
+            
+    raise HTTPException(status_code=502, detail="Failed to resolve stream from all public fallbacks")
