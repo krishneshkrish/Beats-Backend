@@ -109,7 +109,7 @@ async def get_audio_stream(video_id: str) -> Tuple[Optional[str], dict]:
     # 3. Ultimate Fallback: Backend Multi-Tier Solver
     logger.info(f"[Piped Resolver] Local fallback failed. Attempting ultimate multi-tier solver for {video_id}...")
     try:
-        from app.routers.ytdlp import _get_stream_url
+        from app.api.yt import _get_stream_url
         url, headers = await _get_stream_url(video_id)
         if url and "youtube.com/watch" not in url:
             logger.info(f"[Piped Resolver Ultimate Succeeded] Resolved {video_id} via multi-tier fallback")

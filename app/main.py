@@ -13,7 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings, setup_oauth_file
 from app.db.database import create_tables, get_session_local
 from app.db.seeder import seed_catalog
-from app.routers import greeting, recommendations, log, mood, analytics, journey, search, ml, ytdlp
+from app.routers import greeting, recommendations, log, mood, analytics, journey, search, ml
+from app.api import yt as yt_api
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,8 +84,8 @@ app.include_router(analytics.router)
 app.include_router(journey.router)
 app.include_router(search.router)
 app.include_router(ml.router)
-app.include_router(ytdlp.router)
-app.include_router(ytdlp.proxy_router)
+app.include_router(yt_api.router)
+app.include_router(yt_api.proxy_router)
 
 
 

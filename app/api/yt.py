@@ -5,23 +5,27 @@ ytmusicapi  → Handles high-speed metadata search, charts, and native queues.
 Client-Side → Bypasses server datacenter locks by returning direct player handles.
 """
 
-import os  # ✅ Fixed: Added missing import statement
+import os
 import re
 import json
 import uuid
 import asyncio
 import logging
+import urllib.parse
+import time
 from typing import Optional
-import yt_dlp
 
+import yt_dlp
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
+
 from app.models.schemas import Song
 from app.core.config import get_settings
 
 logger = logging.getLogger("beats.media")
 router = APIRouter(prefix="/api/yt", tags=["media"])
+proxy_router = APIRouter(tags=["stream-proxy"])
 settings = get_settings()
 
 # ── Shared HTTPX AsyncClient for Proxying ──────────────────────────────────────
@@ -57,8 +61,6 @@ def get_ytmusic():
                 if "headers" in oauth_content:
                     _ytmusic = YTMusic(oauth_path)
                 else:
-                    # If OAuth token is expired/expiring, it cannot be refreshed without client credentials.
-                    # Fallback to standard unauthenticated mode to prevent KeyError: 'access_token' on API queries.
                     import time
                     expires_at = oauth_content.get("expires_at", 0)
                     if expires_at and (expires_at - int(time.time()) < 60):
@@ -83,10 +85,7 @@ def get_ytmusic():
 
 # ── Core Playback Helpers ─────────────────────────────────────────────────────
 
-import urllib.parse
-import time
-
-# Simple in-memory cache: video_id -> (expiry_epoch_seconds, url)
+# Simple in-memory cache: video_id -> (expiry_epoch_seconds, url, headers)
 _STREAM_URL_CACHE = {}
 
 def _get_url_expiry(url: str) -> float:
@@ -98,12 +97,10 @@ def _get_url_expiry(url: str) -> float:
             return float(expire_val[0])
     except Exception:
         pass
-    # Default to 2 hours from now if we can't parse it
     return time.time() + 7200
 
 async def _get_stream_url(video_id: str) -> tuple[str, dict]:
     """Extracts a direct playable audio-only stream URL using yt-dlp with multi-client anti-bot fallback."""
-    # Check cache first
     cached_data = _STREAM_URL_CACHE.get(video_id)
     if cached_data:
         if len(cached_data) == 3:
@@ -111,18 +108,15 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
         else:
             expiry, url = cached_data
             headers = {}
-        # If cache is valid (with 10 minutes safety margin), return it
         if time.time() < expiry - 600:
             logger.info(f"[Stream URL Cache Hit] Resolved {video_id} from cache.")
             return url, headers
 
-    # Resolve track title & artist for the search fallback retry asynchronously on the main loop
     title = None
     artist = None
     ytmusic = get_ytmusic()
     if ytmusic:
         try:
-            # get_song makes blocking network requests; run in executor to keep the main event loop responsive
             loop = asyncio.get_running_loop()
             song_details = await loop.run_in_executor(None, ytmusic.get_song, video_id)
             if song_details and "videoDetails" in song_details:
@@ -153,7 +147,6 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
         po_token = os.environ.get("YT_PO_TOKEN", "MlXZB1SIORN-4Nk5uVP-8shKK-uQhZ51L2kHh52sl5n5oTFyWvsbU7j325eSyErULr9zYq2Kf_y0JuWLpGkAFrx5B3C95wHfKDtz6LqB4uxOQfqX_ZPW")
         visitor_data = os.environ.get("YT_VISITOR_DATA", "Cgt4TEFISGVKN0h1WSjhr4HTBjIKCgJJThIEGgAga2LfAgrcAjIwLllUPXFSNXprN0xuYXdQWGEwTk82MUtWVk15S0xTVVVNVEo4Z2FyUzUzSnlkelhMX2tXc1FkTU8xZnF6RzJ0NXVrLU83aklOZjlZcGUwY1dUS0tCWWlJWkZudV95Skh4OEVVallXaFc3VWtIRzF4R3lqVG5NQkpySUI1VndJUm5YT3gtWEN1Q2JvV1JYUzk0Z29lNHY1eTNkZjNHa0NGdUM2d01CNjRrc3doUVBFSm5WMnFjbU9wT2xSU2VSMm9kdjJuWjNBMkxacXpWN08wUzZBUDdEYTlVTWFYMG9iSkpJdFV4TENITHItTXYyWmZuWl81SUpyMGxuQVBGR3JEN2lYeHJlVTV5Zk9UYW1fVmpEZzQ1czk3VExGbUpUZ085ck12bi1jTFdWYU5ZVmVLejVLcUx3dUVUSzQzWHhzbGE0T0JwV0RoemxBbGZhMXRTUnQtV2VQbFY2Zw%3D%3D")
 
-        # Define direct lookup options
         ydl_opts_primary = {
             'format': 'bestaudio/best/140/251/18/ba/b',
             'quiet': True,
@@ -311,7 +304,6 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
         if cookiefile:
             ydl_opts_fallback_cookies['cookiefile'] = cookiefile
 
-        # 1. Try Direct Lookup across all configurations
         direct_tiers = [
             ("Primary Direct Lookup (Dynamic POT + Cookies)", ydl_opts_primary),
             ("Tier 0.2 Direct Lookup (Dynamic POT Unauth)", ydl_opts_dyn_unauth),
@@ -335,7 +327,6 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
             except Exception as e:
                 logger.warning(f"[yt-dlp Direct Lookup Failed] {tier_name} failed for {video_id}: {e}")
 
-        # 2. Try Fallback Search & Retry Pipeline
         search_query = f"ytsearch1:{artist} - {title} Audio" if artist and title else f"ytsearch1:{title} Audio" if title else None
         if search_query:
             search_tiers = [
@@ -356,7 +347,6 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
                 except Exception as search_err:
                     logger.error(f"[yt-dlp Search Retry Failed] {tier_name} failed for query '{search_query}': {search_err}")
 
-        # 3. pytubefix Fallback
         try:
             from pytubefix import YouTube as PyTubeYouTube
             logger.info(f"[pytubefix] Attempting dynamic extraction fallback for {video_id}...")
@@ -368,7 +358,6 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
         except Exception as py_err:
             logger.error(f"[pytubefix failed for {video_id}]: {py_err}")
 
-        # 4. SoundCloud Search and Extraction Fallback
         try:
             logger.info(f"[SoundCloud Fallback] YouTube blocked. Using metadata for {video_id} (title={title}, artist={artist}) to query SoundCloud...")
             if title:
@@ -469,7 +458,6 @@ async def stream_audio(video_id: str, request: Request):
         
     headers = dict(cached_headers) if cached_headers else {}
     if "User-Agent" not in headers:
-        # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         if "c=ANDROID" in stream_url:
             user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
@@ -518,7 +506,6 @@ async def stream_audio(video_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @router.get("/search", response_model=list[Song])
 async def search_media(
     request: Request,
@@ -528,7 +515,6 @@ async def search_media(
 ):
     """Production Search Router: Instantly runs metadata calls with zero server overhead."""
     if source == "soundcloud":
-        # Gracefully handle soundcloud source searches now that yt-dlp is dropped
         return []
 
     ytmusic = get_ytmusic()
@@ -605,7 +591,6 @@ async def get_lyrics(video_id: str = Query(...)):
 
 @router.get("/trending", response_model=list[Song])
 async def trending_searches(request: Request, mood: Optional[str] = Query(default=None)):
-    """✅ Fixed: Added trending endpoints to prevent frontend 404s"""
     mood_queries = {
         "Happy":   "happy feel good songs 2026",
         "Chill":   "chill lo-fi beats study",
@@ -643,7 +628,6 @@ async def get_charts(
     country: str = Query(default="IN"),
     limit: int = Query(default=6, ge=1, le=20),
 ):
-    """✅ Fixed: Added charts fallback handling to prevent router 404s"""
     ytmusic = get_ytmusic()
     if not ytmusic:
         return []
@@ -678,7 +662,6 @@ async def refresh_stream_url(request: Request, video_id: str = Query(...), sourc
 
 
 # ── Stream Proxy Router (No prefix for /api/stream-proxy) ────────────────────────
-proxy_router = APIRouter(tags=["stream-proxy"])
 
 @proxy_router.get("/api/stream-proxy")
 async def stream_proxy(request: Request, url: str = Query(...)):
@@ -686,7 +669,6 @@ async def stream_proxy(request: Request, url: str = Query(...)):
     Proxies raw googlevideo.com (or other) audio URLs to bypass client-side CORS issues,
     forwarding HTTP Range headers and returning a StreamingResponse.
     """
-    # Reconstruct the full URL defensively if it was not URL-encoded by the caller
     query_string = request.url.query
     if query_string.startswith("url="):
         url = query_string[4:]
@@ -695,7 +677,6 @@ async def stream_proxy(request: Request, url: str = Query(...)):
 
     logger.info(f"[Stream Proxy] Proxying URL: {url[:100]}...")
     
-    # Look up headers in the in-memory cache to match the exact client profile that resolved it
     cached_headers = {}
     for cached in _STREAM_URL_CACHE.values():
         if len(cached) == 3 and cached[1] == url:
@@ -704,7 +685,6 @@ async def stream_proxy(request: Request, url: str = Query(...)):
             
     headers = dict(cached_headers) if cached_headers else {}
     if "User-Agent" not in headers:
-        # Standardize header forwarding: YouTube requires specific User-Agents for specific clients
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         if "c=ANDROID" in url:
             user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
@@ -788,7 +768,6 @@ async def get_stream_url_json(video_id: str, request: Request):
     Sets Cache-Control headers for performance.
     """
     from app.services.stream_resolver import get_audio_stream
-    from fastapi.responses import JSONResponse
     
     stream_url, headers = await get_audio_stream(video_id)
     if not stream_url:
@@ -805,5 +784,3 @@ async def get_stream_url_json(video_id: str, request: Request):
             "Cache-Control": "public, max-age=3600"
         }
     )
-
-
