@@ -325,9 +325,20 @@ async def refresh_stream(video_id: str, source: str = "youtube"):
     """
     piped_instances = [
         "https://pipedapi.kavin.rocks",
+        "https://pipedapi.leptons.xyz",
+        "https://pipedapi.nosebs.ru",
+        "https://pipedapi.adminforge.de",
         "https://api.piped.yt",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.us.to",
+        "https://pipedapi.owo.si",
+        "https://pipedapi.ducks.party",
+        "https://piped-api.privacy.com.de",
+        "https://api.piped.private.coffee",
+        "https://pipedapi.drgns.space",
+        "https://pipedapi-libre.kavin.rocks",
+        "https://piped-api.codespace.cz",
+        "https://pipedapi.reallyaweso.me",
+        "https://pipedapi.darkness.services",
+        "https://pipedapi.orangenet.cc",
     ]
     
     async def fetch_from_instance(instance: str) -> str:
