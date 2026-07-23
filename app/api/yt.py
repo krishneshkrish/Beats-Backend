@@ -224,6 +224,7 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
             'no_warnings': True,
             'skip_download': True,
             'nocheckcertificate': True,
+            'no_plugins': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded'],
@@ -303,13 +304,7 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
 
         direct_tiers = [
             ("Primary Direct Lookup (Dynamic POT + Cookies)", ydl_opts_primary),
-            ("Tier 0.2 Direct Lookup (Dynamic POT Unauth)", ydl_opts_dyn_unauth),
-            ("Tier 0.5 Direct Lookup (Manual POT + Cookies)", ydl_opts_manual),
-            ("Tier 0.7 TV Embedded Bypass (No POT)", ydl_opts_tv_embedded_only),
-            ("Tier 0.8 Android VR Bypass (No POT)", ydl_opts_android_vr_only),
-            ("Tier 1 Direct Lookup (TV/Android Unauth)", ydl_opts_tv_unauth),
-            ("Tier 2 Direct Lookup (TV/Android Auth)", ydl_opts_tv_auth),
-            ("Tier 3 Direct Lookup (Standard Fallback)", ydl_opts_fallback_cookies),
+            ("Standard Fallback with Cookies", ydl_opts_fallback_cookies),
         ]
 
         for tier_name, opts in direct_tiers:
