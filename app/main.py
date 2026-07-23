@@ -30,10 +30,6 @@ async def lifespan(app: FastAPI):
     logger.info("🎵 Beats backend starting up...")
     setup_oauth_file()  # write oauth.json from env var on cloud platforms
 
-    # Start the PO Token provider
-    from app.core.pot_provider import start_provider, stop_provider
-    start_provider()
-
     # Create DB tables
     await create_tables()
     logger.info("✅ Database tables ready.")
@@ -44,13 +40,11 @@ async def lifespan(app: FastAPI):
             await seed_catalog(db)
 
     logger.info(f"🚀 Beats API running on port {settings.APP_PORT}")
-    logger.info(f"   CORS origins: {settings.origins_list}")
     logger.info(f"   Env: {settings.APP_ENV}")
 
     yield
 
     logger.info("👋 Beats backend shutting down.")
-    stop_provider()
 
 
 app = FastAPI(
@@ -67,12 +61,18 @@ async def normalize_double_slashes(request: Request, call_next):
     return await call_next(request)
 
 # ── CORS — allow Next.js dev server + production ──────────────────────────────
+# Configure explicitly allowed origins
+origins = list(settings.origins_list)
+for extra in ["http://localhost:3000", "capacitor://localhost", "http://localhost", "https://beats-pearl.vercel.app"]:
+    if extra not in origins:
+        origins.append(extra)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.origins_list,
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Range"],
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
@@ -85,7 +85,6 @@ app.include_router(journey.router)
 app.include_router(search.router)
 app.include_router(ml.router)
 app.include_router(yt_api.router)
-app.include_router(yt_api.proxy_router)
 
 
 
