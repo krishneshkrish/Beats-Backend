@@ -17,13 +17,78 @@ PIPED_INSTANCES = [
 async def get_audio_stream(video_id: str) -> Tuple[Optional[str], dict]:
     """
     Resolves the audio stream URL for a given YouTube video ID.
-    1. Iterates through public Piped API instances with a 4.0s timeout.
-    2. Filters for format='M4A' or mimeType='audio/mp4'.
-    3. Falls back to a custom local yt-dlp extraction (player_client=['ios', 'mweb']).
-    4. Ultimate fallback to backend's multi-tier _get_stream_url.
+    1. Checks the shared memory cache for an active resolved URL.
+    2. Runs a fast local yt-dlp tv_embedded client lookup (DASH enabled, HLS skipped).
+       This bypasses bot checks natively without requiring cookies or POT.
+    3. Fallback: Iterates through public Piped API instances with a 4.0s timeout.
+    4. Ultimate Fallback: Backend's multi-tier _get_stream_url.
     Returns (stream_url, headers).
     """
-    # 1. Piped Multi-Instance Resolution Pool
+    # 0. Check Shared Cache First to support zero-latency Range requests
+    try:
+        from app.api.yt import _STREAM_URL_CACHE
+        cached_data = _STREAM_URL_CACHE.get(video_id)
+        if cached_data:
+            if len(cached_data) == 3:
+                expiry, url, headers = cached_data
+            else:
+                expiry, url = cached_data
+                headers = {}
+            if time.time() < expiry - 600:
+                logger.info(f"[Stream Resolver Cache Hit] Resolved {video_id} from cache.")
+                return url, headers
+    except Exception as cache_err:
+        logger.warning(f"[Stream Resolver Cache Check Failed] {cache_err}")
+
+    # Helper to cache and return the stream URL
+    def cache_and_return(url, headers):
+        try:
+            from app.api.yt import _STREAM_URL_CACHE, _get_url_expiry
+            expiry = _get_url_expiry(url)
+            _STREAM_URL_CACHE[video_id] = (expiry, url, headers)
+            logger.info(f"[Stream Resolver Cache Populate] Cached {video_id} (expires in {int(expiry - time.time())}s)")
+        except Exception as cache_err:
+            logger.warning(f"[Stream Resolver Cache Write Failed] {cache_err}")
+        return url, headers
+
+    # 1. Fast tv_embedded Local Extraction (Bypasses bot checks without cookies/POT)
+    logger.info(f"[Stream Resolver] Attempting fast TV embedded lookup for {video_id}...")
+    try:
+        import yt_dlp
+        ydl_opts_tv = {
+            'format': 'bestaudio/best/140/251/18/ba/b',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded'],
+                    'player_skip': ['web', 'web_embedded', 'mweb', 'ios', 'android'],
+                    'skip': ['hls'],  # Critical: Do NOT skip dash!
+                    'js_runtime': 'node'
+                }
+            }
+        }
+        
+        def extract_tv():
+            with yt_dlp.YoutubeDL(ydl_opts_tv) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                url = info.get('url')
+                if url and "googlevideo.com" in url:
+                    return url, info.get('http_headers', {})
+            return None, {}
+            
+        import asyncio
+        loop = asyncio.get_event_loop()
+        url, headers = await loop.run_in_executor(None, extract_tv)
+        if url:
+            logger.info(f"[Stream Resolver TV Succeeded] Resolved {video_id} via TV embedded client")
+            return cache_and_return(url, headers)
+    except Exception as e:
+        logger.warning(f"[Stream Resolver TV Failed] Fast TV client fallback failed for {video_id}: {e}")
+
+    # 2. Piped Multi-Instance Resolution Pool
     for instance_url in PIPED_INSTANCES:
         try:
             logger.info(f"[Piped Resolver] Querying {instance_url} for {video_id}")
@@ -57,63 +122,20 @@ async def get_audio_stream(video_id: str) -> Tuple[Optional[str], dict]:
                         headers = {
                             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
                         }
-                        return stream_url, headers
+                        return cache_and_return(stream_url, headers)
                 else:
                     logger.warning(f"[Piped Resolver Failed] {instance_url} returned status {resp.status_code}")
         except Exception as e:
             logger.warning(f"[Piped Resolver Warning] {instance_url} failed: {e}")
 
-    # 2. Local yt-dlp Extraction Fallback (player_client=['ios', 'mweb'])
-    logger.info(f"[Piped Resolver] All Piped instances failed. Running local yt-dlp fallback (ios/mweb) for {video_id}...")
-    try:
-        import yt_dlp
-        cookies_path = "cookies.txt"
-        cookiefile = cookies_path if os.path.exists(cookies_path) else None
-        ydl_opts = {
-            'format': 'bestaudio/best/140/251/18/ba/b',
-            'quiet': True,
-            'no_warnings': True,
-            'skip_download': True,
-            'nocheckcertificate': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'mweb'],
-                    'skip': ['hls', 'dash'],
-                    'js_runtime': 'node'
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
-            }
-        }
-        if cookiefile:
-            ydl_opts['cookiefile'] = cookiefile
-            
-        def extract():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                url = info.get('url')
-                if url and "googlevideo.com" in url:
-                    return url, info.get('http_headers', {})
-            return None, {}
-            
-        import asyncio
-        loop = asyncio.get_event_loop()
-        url, headers = await loop.run_in_executor(None, extract)
-        if url:
-            logger.info(f"[Piped Resolver Fallback Succeeded] Local yt-dlp resolved {video_id} using ios/mweb client")
-            return url, headers
-    except Exception as e:
-        logger.warning(f"[Piped Resolver Fallback Warning] Local yt-dlp fallback failed for {video_id}: {e}")
-
     # 3. Ultimate Fallback: Backend Multi-Tier Solver
-    logger.info(f"[Piped Resolver] Local fallback failed. Attempting ultimate multi-tier solver for {video_id}...")
+    logger.info(f"[Piped Resolver] Fallbacks failed. Attempting ultimate multi-tier solver for {video_id}...")
     try:
         from app.api.yt import _get_stream_url
         url, headers = await _get_stream_url(video_id)
         if url and "youtube.com/watch" not in url:
             logger.info(f"[Piped Resolver Ultimate Succeeded] Resolved {video_id} via multi-tier fallback")
-            return url, headers
+            return cache_and_return(url, headers)
     except Exception as e:
         logger.error(f"[Piped Resolver Ultimate Failed] Ultimate fallback failed for {video_id}: {e}")
         

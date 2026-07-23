@@ -156,7 +156,7 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios', 'android', 'mweb', 'tv_embedded'],
-                    'skip': ['hls', 'dash'],
+                    'skip': ['hls'],  # Keep dash!
                     'js_runtime': 'node'
                 },
                 'youtubepot-bgutilhttp': {
@@ -179,7 +179,7 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios', 'android', 'mweb', 'tv_embedded'],
-                    'skip': ['hls', 'dash'],
+                    'skip': ['hls'],  # Keep dash!
                     'js_runtime': 'node'
                 },
                 'youtubepot-bgutilhttp': {
@@ -207,7 +207,8 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
                         f'tv_embedded.gvs+{po_token}'
                     ],
                     'visitor_data': visitor_data,
-                    'js_runtime': 'node'
+                    'js_runtime': 'node',
+                    'skip': ['hls']  # Keep dash!
                 },
                 'youtubepot-bgutilhttp': {
                     'base_url': 'http://127.0.0.1:4416'
@@ -227,6 +228,7 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
                 'youtube': {
                     'player_client': ['tv_embedded'],
                     'player_skip': ['web', 'web_embedded', 'mweb', 'ios', 'android'],
+                    'skip': ['hls'],
                     'js_runtime': 'node'
                 }
             }
@@ -242,6 +244,7 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
                 'youtube': {
                     'player_client': ['android_vr'],
                     'player_skip': ['web', 'web_embedded', 'mweb', 'ios', 'android', 'tv_embedded'],
+                    'skip': ['hls'],
                     'js_runtime': 'node'
                 }
             }
@@ -257,10 +260,8 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
                 'youtube': {
                     'player_client': ['tv_embedded', 'android'],
                     'player_skip': ['web', 'web_embedded', 'mweb', 'ios'],
+                    'skip': ['hls'],
                     'js_runtime': 'node'
-                },
-                'youtubepot-bgutilhttp': {
-                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -275,10 +276,8 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
                 'youtube': {
                     'player_client': ['tv_embedded', 'android'],
                     'player_skip': ['web', 'web_embedded', 'mweb', 'ios'],
+                    'skip': ['hls'],
                     'js_runtime': 'node'
-                },
-                'youtubepot-bgutilhttp': {
-                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -294,10 +293,8 @@ async def _get_stream_url(video_id: str) -> tuple[str, dict]:
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded', 'android_vr', 'mweb', 'android'],
+                    'skip': ['hls'],
                     'js_runtime': 'node'
-                },
-                'youtubepot-bgutilhttp': {
-                    'base_url': 'http://127.0.0.1:4416'
                 }
             }
         }
@@ -450,60 +447,79 @@ def _ytmusic_track_to_song(track: dict, stream_url: str) -> Song:
 async def stream_audio(video_id: str, request: Request):
     """Proxies the audio stream to bypass YouTube IP lock and support Range headers for seeking."""
     from app.services.stream_resolver import get_audio_stream
-    stream_url, cached_headers = await get_audio_stream(video_id)
-    if not stream_url or "youtube.com/watch" in stream_url:
-        logger.warning(f"[Stream Proxy] Stream url for {video_id} failed or not extracted. Using fallback stream.")
-        stream_url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-        cached_headers = {}
-        
-    headers = dict(cached_headers) if cached_headers else {}
-    if "User-Agent" not in headers:
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        if "c=ANDROID" in stream_url:
-            user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
-        elif "c=IOS" in stream_url or "c=APPLE_IV" in stream_url:
-            user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
-        headers["User-Agent"] = user_agent
-        
-    range_header = request.headers.get("range")
-    if range_header:
-        headers["Range"] = range_header
-
-    client = get_shared_client()
     
-    async def stream_generator(response_obj):
-        try:
-            async for chunk in response_obj.aiter_bytes(chunk_size=65536):
-                yield chunk
-        finally:
-            await response_obj.aclose()
+    max_retries = 2
+    for attempt in range(max_retries):
+        stream_url, cached_headers = await get_audio_stream(video_id)
+        if not stream_url or "youtube.com/watch" in stream_url:
+            logger.warning(f"[Stream Proxy] Stream url for {video_id} failed or not extracted. Using fallback stream.")
+            stream_url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+            cached_headers = {}
+            
+        headers = dict(cached_headers) if cached_headers else {}
+        if "User-Agent" not in headers:
+            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            if "c=ANDROID" in stream_url:
+                user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
+            elif "c=IOS" in stream_url or "c=APPLE_IV" in stream_url:
+                user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
+            headers["User-Agent"] = user_agent
+            
+        range_header = request.headers.get("range")
+        if range_header:
+            headers["Range"] = range_header
 
-    try:
-        req = client.build_request("GET", stream_url, headers=headers)
-        response = await client.send(req, stream=True)
+        client = get_shared_client()
         
-        if response.status_code >= 400:
-            await response.aclose()
-            raise HTTPException(status_code=response.status_code, detail="Failed to retrieve stream from source")
+        try:
+            req = client.build_request("GET", stream_url, headers=headers)
+            response = await client.send(req, stream=True)
             
-        resp_headers = {
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
-        }
-        if "content-range" in response.headers:
-            resp_headers["Content-Range"] = response.headers["content-range"]
-        if "content-length" in response.headers:
-            resp_headers["Content-Length"] = response.headers["content-length"]
+            # If the upstream responds with 403 or 410 (signature expired / access denied), 
+            # and we have retries left, clear the cache entry for this video_id and retry!
+            if response.status_code in (403, 410) and attempt < max_retries - 1:
+                await response.aclose()
+                logger.warning(f"[Stream Proxy] Stream url returned {response.status_code}. Clearing cache and re-resolving for {video_id}...")
+                if video_id in _STREAM_URL_CACHE:
+                    del _STREAM_URL_CACHE[video_id]
+                continue
+                
+            if response.status_code >= 400:
+                await response.aclose()
+                raise HTTPException(status_code=response.status_code, detail=f"Failed to retrieve stream from source: {response.status_code}")
+                
+            # If successful, return the streaming response
+            async def stream_generator(response_obj):
+                try:
+                    async for chunk in response_obj.aiter_bytes(chunk_size=65536):
+                        yield chunk
+                finally:
+                    await response_obj.aclose()
+                    
+            resp_headers = {
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "public, max-age=3600",
+            }
+            if "content-range" in response.headers:
+                resp_headers["Content-Range"] = response.headers["content-range"]
+            if "content-length" in response.headers:
+                resp_headers["Content-Length"] = response.headers["content-length"]
+                
+            return StreamingResponse(
+                stream_generator(response),
+                status_code=response.status_code,
+                media_type=response.headers.get("content-type", "audio/mpeg"),
+                headers=resp_headers
+            )
             
-        return StreamingResponse(
-            stream_generator(response),
-            status_code=response.status_code,
-            media_type=response.headers.get("content-type", "audio/mpeg"),
-            headers=resp_headers
-        )
-    except Exception as e:
-        logger.error(f"[Streaming Proxy Exception] {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        except (httpx.HTTPError, httpx.StreamError) as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"[Stream Proxy] Request failed: {e}. Clearing cache and re-resolving for {video_id}...")
+                if video_id in _STREAM_URL_CACHE:
+                    del _STREAM_URL_CACHE[video_id]
+                continue
+            logger.error(f"[Stream Proxy Exception] {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/search", response_model=list[Song])
@@ -668,6 +684,7 @@ async def stream_proxy(request: Request, url: str = Query(...)):
     """
     Proxies raw googlevideo.com (or other) audio URLs to bypass client-side CORS issues,
     forwarding HTTP Range headers and returning a StreamingResponse.
+    Supports auto-re-resolution if the cached URL has expired.
     """
     query_string = request.url.query
     if query_string.startswith("url="):
@@ -677,64 +694,97 @@ async def stream_proxy(request: Request, url: str = Query(...)):
 
     logger.info(f"[Stream Proxy] Proxying URL: {url[:100]}...")
     
-    cached_headers = {}
-    for cached in _STREAM_URL_CACHE.values():
+    # Try to find corresponding video_id from cache matching this URL
+    video_id = None
+    for vid, cached in _STREAM_URL_CACHE.items():
         if len(cached) == 3 and cached[1] == url:
-            cached_headers = cached[2]
+            video_id = vid
             break
             
-    headers = dict(cached_headers) if cached_headers else {}
-    if "User-Agent" not in headers:
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        if "c=ANDROID" in url:
-            user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
-        elif "c=IOS" in url or "c=APPLE_IV" in url:
-            user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
-        headers["User-Agent"] = user_agent
-        
     range_header = request.headers.get("range")
-    if range_header:
-        headers["Range"] = range_header
-
-    client = get_shared_client()
+    max_retries = 2
+    current_url = url
     
-    async def stream_generator(response_obj):
-        try:
-            async for chunk in response_obj.aiter_bytes(chunk_size=65536):
-                yield chunk
-        finally:
-            await response_obj.aclose()
+    for attempt in range(max_retries):
+        cached_headers = {}
+        if video_id and video_id in _STREAM_URL_CACHE:
+            cached_data = _STREAM_URL_CACHE[video_id]
+            if len(cached_data) == 3:
+                cached_headers = cached_data[2]
+                
+        headers = dict(cached_headers) if cached_headers else {}
+        if "User-Agent" not in headers:
+            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            if "c=ANDROID" in current_url:
+                user_agent = "com.google.android.youtube/19.29.37 (Linux; U; Android 11; GMT) (gzip)"
+            elif "c=IOS" in current_url or "c=APPLE_IV" in current_url:
+                user_agent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iPhone OS 17_5_1 like Mac OS X; en_US)"
+            headers["User-Agent"] = user_agent
+            
+        if range_header:
+            headers["Range"] = range_header
 
-    try:
-        req = client.build_request("GET", url, headers=headers)
-        response = await client.send(req, stream=True)
+        client = get_shared_client()
         
-        if response.status_code >= 400:
-            await response.aclose()
-            raise HTTPException(status_code=response.status_code, detail="Failed to retrieve stream from source")
+        try:
+            req = client.build_request("GET", current_url, headers=headers)
+            response = await client.send(req, stream=True)
             
-        resp_headers = {
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
-        }
-        if "content-range" in response.headers:
-            resp_headers["Content-Range"] = response.headers["content-range"]
-        if "content-length" in response.headers:
-            resp_headers["Content-Length"] = response.headers["content-length"]
+            # If signature expired / access denied and we have retries left and a video_id, re-resolve!
+            if response.status_code in (403, 410) and attempt < max_retries - 1 and video_id:
+                await response.aclose()
+                logger.warning(f"[Stream Proxy] Proxy URL returned {response.status_code}. Re-resolving video_id {video_id}...")
+                if video_id in _STREAM_URL_CACHE:
+                    del _STREAM_URL_CACHE[video_id]
+                from app.services.stream_resolver import get_audio_stream
+                new_url, new_headers = await get_audio_stream(video_id)
+                if new_url:
+                    current_url = new_url
+                    continue
+                    
+            if response.status_code >= 400:
+                await response.aclose()
+                raise HTTPException(status_code=response.status_code, detail=f"Failed to retrieve stream from source: {response.status_code}")
+                
+            async def stream_generator(response_obj):
+                try:
+                    async for chunk in response_obj.aiter_bytes(chunk_size=65536):
+                        yield chunk
+                finally:
+                    await response_obj.aclose()
+                    
+            resp_headers = {
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "public, max-age=3600",
+            }
+            if "content-range" in response.headers:
+                resp_headers["Content-Range"] = response.headers["content-range"]
+            if "content-length" in response.headers:
+                resp_headers["Content-Length"] = response.headers["content-length"]
+                
+            content_type = response.headers.get("content-type")
+            if not content_type or "audio" not in content_type:
+                content_type = "audio/mp4"
+                
+            return StreamingResponse(
+                stream_generator(response),
+                status_code=response.status_code,
+                media_type=content_type,
+                headers=resp_headers
+            )
             
-        content_type = response.headers.get("content-type")
-        if not content_type or "audio" not in content_type:
-            content_type = "audio/mp4"
-            
-        return StreamingResponse(
-            stream_generator(response),
-            status_code=response.status_code,
-            media_type=content_type,
-            headers=resp_headers
-        )
-    except Exception as e:
-        logger.error(f"[Stream Proxy Exception] {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        except (httpx.HTTPError, httpx.StreamError) as e:
+            if attempt < max_retries - 1 and video_id:
+                logger.warning(f"[Stream Proxy] Connection failed: {e}. Re-resolving video_id {video_id}...")
+                if video_id in _STREAM_URL_CACHE:
+                    del _STREAM_URL_CACHE[video_id]
+                from app.services.stream_resolver import get_audio_stream
+                new_url, new_headers = await get_audio_stream(video_id)
+                if new_url:
+                    current_url = new_url
+                    continue
+            logger.error(f"[Stream Proxy Exception] {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/pot-status")
