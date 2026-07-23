@@ -673,6 +673,13 @@ async def get_charts(
 
 @router.get("/refresh")
 async def refresh_stream_url(request: Request, video_id: str = Query(...), source: str = Query(default="youtube")):
+    # Pre-warm backend stream resolver cache asynchronously
+    from app.services.stream_resolver import get_audio_stream
+    try:
+        await get_audio_stream(video_id)
+    except Exception as e:
+        logger.warning(f"[Refresh Cache Pre-warm Failed] {video_id}: {e}")
+        
     url = f"{request.base_url}api/yt/stream?video_id={video_id}"
     return {"video_id": video_id, "url": url, "source": source}
 
