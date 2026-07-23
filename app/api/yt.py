@@ -321,7 +321,7 @@ async def yt_proxy(req: ProxyRequest):
 @router.get("/refresh")
 async def refresh_stream(video_id: str, source: str = "youtube"):
     """
-    Refreshes direct audio stream URL via Piped API instance failover pool.
+    Refreshes direct audio stream URL via Piped API instance failover pool concurrently.
     """
     piped_instances = [
         "https://pipedapi.kavin.rocks",
@@ -329,17 +329,24 @@ async def refresh_stream(video_id: str, source: str = "youtube"):
         "https://pipedapi.tokhmi.xyz",
         "https://pipedapi.us.to",
     ]
-    for instance in piped_instances:
+    
+    async def fetch_from_instance(instance: str) -> str:
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+            res = await client.get(f"{instance}/streams/{video_id}")
+            if res.status_code == 200:
+                data = res.json()
+                audio_streams = data.get("audioStreams", [])
+                if audio_streams:
+                    return audio_streams[0].get("url")
+        raise ValueError(f"Failed to fetch from {instance}")
+
+    tasks = [fetch_from_instance(inst) for inst in piped_instances]
+    for completed_task in asyncio.as_completed(tasks):
         try:
-            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-                res = await client.get(f"{instance}/streams/{video_id}")
-                if res.status_code == 200:
-                    data = res.json()
-                    audio_streams = data.get("audioStreams", [])
-                    if audio_streams:
-                        best_audio = audio_streams[0]
-                        return {"url": best_audio.get("url")}
+            url = await completed_task
+            if url:
+                return {"url": url}
         except Exception as e:
-            logger.warning(f"Failed to resolve stream via Piped instance {instance}: {e}")
+            logger.warning(f"Concurrently failed to fetch stream: {e}")
             
     raise HTTPException(status_code=502, detail="Failed to resolve stream from all public fallbacks")

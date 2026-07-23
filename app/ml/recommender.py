@@ -225,9 +225,14 @@ class MLRecommender:
         y = df["song_label"].values
         w = df["weight"].values
 
-        X_train, X_test, y_train, y_test, w_train, _ = train_test_split(
-            X, y, w, test_size=0.2, random_state=42
-        )
+        if len(events) < 5:
+            X_train, X_test = X, X
+            y_train, y_test = y, y
+            w_train = w
+        else:
+            X_train, X_test, y_train, y_test, w_train, _ = train_test_split(
+                X, y, w, test_size=0.2, random_state=42
+            )
 
         clf = RandomForestClassifier(n_estimators=100, random_state=42)
         clf.fit(X_train, y_train, sample_weight=w_train)

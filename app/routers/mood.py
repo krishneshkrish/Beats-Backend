@@ -35,6 +35,7 @@ async def set_mood(payload: MoodSetPayload, db: AsyncSession = Depends(get_db)):
             dow = now.weekday()
 
         log = MoodLog(
+            username=payload.username,
             mood=payload.mood,
             timestamp=payload.timestamp,
             hour_of_day=hour,

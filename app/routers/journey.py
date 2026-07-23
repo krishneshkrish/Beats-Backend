@@ -10,7 +10,7 @@ from sqlalchemy import select
 from datetime import datetime
 from typing import Literal
 
-from app.db.database import get_db, PlayEvent
+from app.db.database import get_db, PlayEvent, SongCatalog
 from app.db.mock_data import MOCK_JOURNEY, MOCK_SONGS
 from app.models.schemas import TimelineItem, Song
 
@@ -66,12 +66,37 @@ async def journey_timeline(request: Request, db: AsyncSession = Depends(get_db))
             item.song.resolve_url(base_url)
         return MOCK_JOURNEY
 
+    # Pre-fetch dynamic song catalog mapping
+    song_ids = [e.song_id for e in events]
+    catalog_result = await db.execute(
+        select(SongCatalog).where(SongCatalog.id.in_(song_ids))
+    )
+    catalog_rows = catalog_result.scalars().all()
+    
+    import json
+    catalog_map = {}
+    for r in catalog_rows:
+        try:
+            lyrics_parsed = json.loads(r.lyrics) if r.lyrics else None
+        except Exception:
+            lyrics_parsed = None
+        catalog_map[r.id] = Song(
+            id=r.id,
+            title=r.title,
+            artist=r.artist,
+            album=r.album,
+            artwork=r.artwork,
+            duration=r.duration,
+            url=r.url,
+            lyrics=lyrics_parsed
+        )
+
     items: list[TimelineItem] = []
     seen_artists: set[str] = set()
     play_count = 0
 
     for i, event in enumerate(events):
-        song = SONG_MAP.get(event.song_id)
+        song = catalog_map.get(event.song_id) or SONG_MAP.get(event.song_id)
         if not song:
             continue
 

@@ -95,12 +95,14 @@ async def analytics_summary(db: AsyncSession = Depends(get_db)):
 
     streak = 0
     if play_days:
-        streak = 1
-        for i in range(1, len(play_days)):
-            if (play_days[i - 1] - play_days[i]).days == 1:
-                streak += 1
-            else:
-                break
+        today = datetime.utcnow().date()
+        if (today - play_days[0]).days <= 1:
+            streak = 1
+            for i in range(1, len(play_days)):
+                if (play_days[i - 1] - play_days[i]).days == 1:
+                    streak += 1
+                else:
+                    break
 
     # Circular progress (daily goal = 60min, weekly = 420min, streak = 30 days max)
     circular = [

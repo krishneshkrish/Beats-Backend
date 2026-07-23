@@ -57,6 +57,7 @@ class PlayLogResponse(BaseModel):
 class MoodSetPayload(BaseModel):
     mood: str
     timestamp: str          # ISO string from frontend
+    username: Optional[str] = "default_user"
 
 
 class MoodSetResponse(BaseModel):
