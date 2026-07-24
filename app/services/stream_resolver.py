@@ -41,7 +41,7 @@ def set_cached_stream(video_id: str, url: str, ttl: int = CACHE_TTL_SECONDS):
 
 
 # ── Tier 1: Piped API Node Resolution Pool ───────────────────────────────────
-PIPED_NODES = [
+PIPED_INSTANCES = [
     "https://pipedapi.palvelu.org",
     "https://pipedapi.mha.fi",
     "https://pipedapi.drgns.space",
@@ -51,11 +51,12 @@ PIPED_NODES = [
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
 ]
+PIPED_NODES = PIPED_INSTANCES
 
 
 async def _resolve_via_piped_node(node_url: str, video_id: str) -> str:
-    """Queries a single Piped node for M4A / audio/mp4 audio streams."""
-    async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+    """Queries a single Piped node for M4A / audio/mp4 audio streams with a 3.5s timeout."""
+    async with httpx.AsyncClient(timeout=3.5, follow_redirects=True) as client:
         resp = await client.get(f"{node_url}/streams/{video_id}")
         if resp.status_code == 200:
             data = resp.json()
@@ -85,8 +86,8 @@ async def _resolve_via_piped_node(node_url: str, video_id: str) -> str:
 
 
 async def _resolve_tier_1(video_id: str) -> Optional[str]:
-    """Concurrently queries Piped nodes with a 4.0s timeout per node."""
-    tasks = [asyncio.create_task(_resolve_via_piped_node(node, video_id)) for node in PIPED_NODES]
+    """Concurrently queries Piped nodes with a 3.5s timeout per node."""
+    tasks = [asyncio.create_task(_resolve_via_piped_node(node, video_id)) for node in PIPED_INSTANCES]
     try:
         for completed in asyncio.as_completed(tasks):
             try:
@@ -107,9 +108,11 @@ async def _resolve_tier_1(video_id: str) -> Optional[str]:
     return None
 
 
-# ── Tier 2: yt-dlp Local Extraction Fallback ────────────────────────────────
 def _extract_via_ytdlp(video_id: str) -> Optional[str]:
-    """Synchronous yt-dlp execution using iOS / Android / mweb client context & cookies."""
+    """
+    Synchronous yt-dlp execution using android_vr / tv_embedded / ios client profile
+    to bypass YouTube BotGuard / GetPOT PO token verification.
+    """
     try:
         import yt_dlp
         target_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -121,31 +124,23 @@ def _extract_via_ytdlp(video_id: str) -> Optional[str]:
             "nocheckcertificate": True,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["ios", "android", "mweb"],
+                    "player_client": ["android_vr", "tv_embedded", "ios"],
                     "skip": ["hls", "dash"]
                 }
             },
             "http_headers": {
                 "User-Agent": (
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
-                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+                    "Mozilla/5.0 (SmartTV; Linux; Tizen 6.0) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) SamsungBrowser/4.0 Chrome/76.0.3809.146 TV Safari/537.36"
                 ),
                 "Accept-Language": "en-US,en;q=0.9",
             },
         }
 
-        # Check for cookies file locations
-        cookie_paths = ["/tmp/cookies.txt", "./cookies.txt"]
-        for cp in cookie_paths:
-            if os.path.exists(cp) and os.path.getsize(cp) > 0:
-                ydl_opts["cookiefile"] = cp
-                logger.info(f"[yt-dlp] Using cookies from {cp}")
-                break
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
             if info and "url" in info:
-                logger.info(f"[Tier 2 yt-dlp] Successfully extracted stream for {video_id}")
+                logger.info(f"[Tier 2 yt-dlp] Successfully extracted stream for {video_id} via TV/VR profile")
                 return info["url"]
     except Exception as e:
         logger.warning(f"[Tier 2 yt-dlp Error] Failed extraction for {video_id}: {e}")
@@ -162,8 +157,8 @@ async def resolve_m4a_stream(video_id: str) -> str:
     """
     High-reliability multi-tier M4A stream resolver:
     1. Checks in-memory cache
-    2. Tier 1: Piped API pool
-    3. Tier 2: yt-dlp local extractor
+    2. Tier 1: Piped API pool (3.5s timeout per node)
+    3. Tier 2: yt-dlp local extractor with tv_embedded / android_vr client profile
     """
     # 1. Cache check
     cached = get_cached_stream(video_id)
@@ -183,3 +178,7 @@ async def resolve_m4a_stream(video_id: str) -> str:
         return url
 
     raise ValueError(f"Unable to resolve stream for video_id={video_id} across all resolution tiers.")
+
+
+# Alias for backwards compatibility
+get_audio_stream = resolve_m4a_stream
