@@ -4,7 +4,7 @@ Converts raw play events into the Music Journey storytelling format —
 grouped by time-of-day, with milestone detection.
 """
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
@@ -53,18 +53,45 @@ def _detect_milestone(
 
 
 @router.get("/timeline", response_model=list[TimelineItem])
-async def journey_timeline(request: Request, db: AsyncSession = Depends(get_db)):
+async def journey_timeline(
+    request: Request,
+    username: str = Query(default="default_user"),
+    db: AsyncSession = Depends(get_db)
+):
     result = await db.execute(
-        select(PlayEvent).order_by(PlayEvent.created_at.desc()).limit(50)
+        select(PlayEvent)
+        .where(PlayEvent.username == username)
+        .order_by(PlayEvent.created_at.desc())
+        .limit(50)
     )
     events = result.scalars().all()
 
     base_url = str(request.base_url)
 
     if len(events) < 3:
+        mock_copies = []
         for item in MOCK_JOURNEY:
-            item.song.resolve_url(base_url)
-        return MOCK_JOURNEY
+            song_copy = Song(
+                id=item.song.id,
+                title=item.song.title,
+                artist=item.song.artist,
+                album=item.song.album,
+                artwork=item.song.artwork,
+                duration=item.song.duration,
+                url=item.song.url,
+                lyrics=item.song.lyrics
+            )
+            song_copy.resolve_url(base_url)
+            mock_copies.append(TimelineItem(
+                id=item.id,
+                timestamp=item.timestamp,
+                song=song_copy,
+                moodTag=item.moodTag,
+                timeLabel=item.timeLabel,
+                isMilestone=item.isMilestone,
+                milestoneText=item.milestoneText
+            ))
+        return mock_copies
 
     # Pre-fetch dynamic song catalog mapping
     song_ids = [e.song_id for e in events]
@@ -91,11 +118,13 @@ async def journey_timeline(request: Request, db: AsyncSession = Depends(get_db))
             lyrics=lyrics_parsed
         )
 
-    items: list[TimelineItem] = []
+    # Process events chronologically (oldest to newest) to detect true historical milestones
+    chrono_events = list(reversed(events))
+    chrono_items: list[TimelineItem] = []
     seen_artists: set[str] = set()
     play_count = 0
 
-    for i, event in enumerate(events):
+    for event in chrono_events:
         song = catalog_map.get(event.song_id) or SONG_MAP.get(event.song_id)
         if not song:
             continue
@@ -122,7 +151,7 @@ async def journey_timeline(request: Request, db: AsyncSession = Depends(get_db))
             else event.timestamp
         )
 
-        # Copy the song object to prevent mutability issues on the global map
+        # Copy the song object to prevent mutability issues
         song_copy = Song(
             id=song.id,
             title=song.title,
@@ -135,7 +164,7 @@ async def journey_timeline(request: Request, db: AsyncSession = Depends(get_db))
         )
         song_copy.resolve_url(base_url)
 
-        items.append(TimelineItem(
+        chrono_items.append(TimelineItem(
             id=f"j{event.id}",
             timestamp=ts,
             song=song_copy,
@@ -145,4 +174,6 @@ async def journey_timeline(request: Request, db: AsyncSession = Depends(get_db))
             milestoneText=milestone_text,
         ))
 
-    return items
+    # Return timeline items in reverse chronological order (newest first for display)
+    return list(reversed(chrono_items))
+

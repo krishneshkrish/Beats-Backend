@@ -5,7 +5,7 @@ When you have real play history, this computes live stats from the DB.
 Before that, falls back to mock data so the UI looks rich immediately.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from collections import Counter
@@ -41,8 +41,11 @@ DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 @router.get("/summary", response_model=AnalyticsSummary)
-async def analytics_summary(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(PlayEvent))
+async def analytics_summary(
+    username: str = Query(default="default_user"),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(PlayEvent).where(PlayEvent.username == username))
     events = result.scalars().all()
 
     if len(events) < 5:

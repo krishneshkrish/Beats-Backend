@@ -14,6 +14,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse
 from app.models.schemas import Song
 from app.core.config import get_settings
 
@@ -318,6 +319,49 @@ async def yt_proxy(req: ProxyRequest):
         raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
 
 
+@router.get("/stream")
+async def stream_audio(video_id: str = Query(...)):
+    """
+    Fallback direct audio stream resolver for backend-routed audio links.
+    Concurrently resolves stream URL via Piped API instance pool and redirects to it.
+    """
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.yt",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.us.to",
+    ]
+
+    async def fetch_stream(instance: str) -> str:
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+            res = await client.get(f"{instance}/streams/{video_id}")
+            if res.status_code == 200:
+                data = res.json()
+                audio_streams = data.get("audioStreams", [])
+                if audio_streams:
+                    return audio_streams[0].get("url")
+        raise ValueError(f"Failed to fetch from {instance}")
+
+    tasks = [asyncio.create_task(fetch_stream(inst)) for inst in piped_instances]
+    try:
+        for completed_task in asyncio.as_completed(tasks):
+            try:
+                url = await completed_task
+                if url:
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    return RedirectResponse(url=url, status_code=307)
+            except Exception as e:
+                logger.warning(f"Concurrently failed to resolve stream URL: {e}")
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+    raise HTTPException(status_code=502, detail="Failed to resolve stream link from fallback pool")
+
+
 @router.get("/refresh")
 async def refresh_stream(video_id: str, source: str = "youtube"):
     """
@@ -325,20 +369,9 @@ async def refresh_stream(video_id: str, source: str = "youtube"):
     """
     piped_instances = [
         "https://pipedapi.kavin.rocks",
-        "https://pipedapi.leptons.xyz",
-        "https://pipedapi.nosebs.ru",
-        "https://pipedapi.adminforge.de",
         "https://api.piped.yt",
-        "https://pipedapi.owo.si",
-        "https://pipedapi.ducks.party",
-        "https://piped-api.privacy.com.de",
-        "https://api.piped.private.coffee",
-        "https://pipedapi.drgns.space",
-        "https://pipedapi-libre.kavin.rocks",
-        "https://piped-api.codespace.cz",
-        "https://pipedapi.reallyaweso.me",
-        "https://pipedapi.darkness.services",
-        "https://pipedapi.orangenet.cc",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.us.to",
     ]
     
     async def fetch_from_instance(instance: str) -> str:
@@ -351,13 +384,22 @@ async def refresh_stream(video_id: str, source: str = "youtube"):
                     return audio_streams[0].get("url")
         raise ValueError(f"Failed to fetch from {instance}")
 
-    tasks = [fetch_from_instance(inst) for inst in piped_instances]
-    for completed_task in asyncio.as_completed(tasks):
-        try:
-            url = await completed_task
-            if url:
-                return {"url": url}
-        except Exception as e:
-            logger.warning(f"Concurrently failed to fetch stream: {e}")
+    tasks = [asyncio.create_task(fetch_from_instance(inst)) for inst in piped_instances]
+    try:
+        for completed_task in asyncio.as_completed(tasks):
+            try:
+                url = await completed_task
+                if url:
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    return {"url": url}
+            except Exception as e:
+                logger.warning(f"Concurrently failed to fetch stream: {e}")
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
             
     raise HTTPException(status_code=502, detail="Failed to resolve stream from all public fallbacks")
+

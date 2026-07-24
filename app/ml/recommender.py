@@ -259,7 +259,7 @@ class MLRecommender:
             return []
 
         mood_enc = self._encode_mood(mood)
-        dow = datetime.now().weekday()
+        dow = datetime.utcnow().weekday()
 
         X = np.array([[mood_enc, hour, dow, 0, 0]])
         probs = model.predict_proba(X)[0]
@@ -284,7 +284,7 @@ async def get_recommendations(
     context: str = "home",
     username: str = "default_user",
 ) -> list[Song]:
-    hour = datetime.now().hour
+    hour = datetime.utcnow().hour
 
     if _recommender.models.get(username) is None:
         await _recommender.load_model_from_db(db, username)
