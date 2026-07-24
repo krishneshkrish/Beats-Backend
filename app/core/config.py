@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     YT_COOKIES_PATH: str = "./cookies.txt"
     COOKIES_B64: str = ""         # base64 encoded cookies.txt (legacy / fallback)
+    YOUTUBE_COOKIES_BASE64: str = "" # base64 encoded YouTube cookies for Render/cloud deployment
 
     @property
     def origins_list(self) -> List[str]:
@@ -72,15 +73,20 @@ def setup_oauth_file() -> None:
 
     # ── cookies.txt ───────────────────────────────────────────────────────────
     path = settings.YT_COOKIES_PATH
-    
-    # Priority 1: Check if updated base64 variable is provided to overwrite/write the file
-    if settings.COOKIES_B64 and settings.COOKIES_B64.strip():
+    b64_cookie_str = os.environ.get("YOUTUBE_COOKIES_BASE64") or settings.YOUTUBE_COOKIES_BASE64 or settings.COOKIES_B64
+
+    # Priority 1: Check if base64 variable is provided to write cookie files
+    if b64_cookie_str and b64_cookie_str.strip():
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-            decoded = base64.b64decode(settings.COOKIES_B64)
-            with open(path, "wb") as f:
-                f.write(decoded)
-            logger.info(f"✅ cookies.txt written from COOKIES_B64 env var → {path}")
+            decoded = base64.b64decode(b64_cookie_str.strip())
+            for target_path in ["/tmp/cookies.txt", path]:
+                try:
+                    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+                    with open(target_path, "wb") as f:
+                        f.write(decoded)
+                    logger.info(f"✅ cookies.txt written from base64 env var → {target_path}")
+                except Exception as inner_e:
+                    logger.warning(f"Could not write cookies to {target_path}: {inner_e}")
         except Exception as e:
             logger.error(f"❌ Failed to write cookies.txt from base64 string: {e}")
             

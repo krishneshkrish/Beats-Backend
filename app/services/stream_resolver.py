@@ -7,6 +7,7 @@ Multi-Tier Audio Stream Resolution & Cache Engine:
 - Tier 2: Local yt-dlp Extractor with iOS / mweb client context & Mobile User-Agent
 """
 
+import os
 import time
 import asyncio
 import logging
@@ -41,11 +42,14 @@ def set_cached_stream(video_id: str, url: str, ttl: int = CACHE_TTL_SECONDS):
 
 # ── Tier 1: Piped API Node Resolution Pool ───────────────────────────────────
 PIPED_NODES = [
-    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.palvelu.org",
+    "https://pipedapi.mha.fi",
+    "https://pipedapi.drgns.space",
+    "https://piped-api.garudalinux.org",
+    "https://pipedapi.lunar.icu",
     "https://api.piped.yt",
+    "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
-    "https://pipedapi.tokhmi.xyz",
-    "https://pipedapi.us.to",
 ]
 
 
@@ -105,15 +109,22 @@ async def _resolve_tier_1(video_id: str) -> Optional[str]:
 
 # ── Tier 2: yt-dlp Local Extraction Fallback ────────────────────────────────
 def _extract_via_ytdlp(video_id: str) -> Optional[str]:
-    """Synchronous yt-dlp execution using iOS / mweb client context."""
+    """Synchronous yt-dlp execution using iOS / Android / mweb client context & cookies."""
     try:
         import yt_dlp
         target_url = f"https://www.youtube.com/watch?v={video_id}"
         ydl_opts = {
-            "format": "bestaudio/best",
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
             "quiet": True,
             "no_warnings": True,
-            "noplaylist": True,
+            "skip_download": True,
+            "nocheckcertificate": True,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["ios", "android", "mweb"],
+                    "skip": ["hls", "dash"]
+                }
+            },
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
@@ -122,6 +133,14 @@ def _extract_via_ytdlp(video_id: str) -> Optional[str]:
                 "Accept-Language": "en-US,en;q=0.9",
             },
         }
+
+        # Check for cookies file locations
+        cookie_paths = ["/tmp/cookies.txt", "./cookies.txt"]
+        for cp in cookie_paths:
+            if os.path.exists(cp) and os.path.getsize(cp) > 0:
+                ydl_opts["cookiefile"] = cp
+                logger.info(f"[yt-dlp] Using cookies from {cp}")
+                break
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
