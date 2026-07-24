@@ -60,8 +60,7 @@ async def normalize_double_slashes(request: Request, call_next):
         request.scope["path"] = re.sub(r"^/+", "/", request.scope["path"])
     return await call_next(request)
 
-# ── CORS — allow Next.js dev server + production ──────────────────────────────
-# Configure explicitly allowed origins
+# ── CORS — allow Next.js dev server + mobile Capacitor + production ───────────
 origins = list(settings.origins_list)
 for extra in ["http://localhost:3000", "capacitor://localhost", "http://localhost", "https://beats-pearl.vercel.app"]:
     if extra not in origins:
@@ -70,9 +69,11 @@ for extra in ["http://localhost:3000", "capacitor://localhost", "http://localhos
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Range"],
+    allow_methods=["GET", "POST", "OPTIONS", "HEAD"],
+    allow_headers=["*"],
+    expose_headers=["Content-Type", "Range", "Accept-Ranges", "Content-Length", "Content-Range"],
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────

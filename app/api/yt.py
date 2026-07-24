@@ -1,8 +1,8 @@
 """
-Beats — Media Router (Lightweight Metadata API)
-───────────────────────────────────────────────
-ytmusicapi  → Handles high-speed metadata search, charts, and native queues.
-Client-Side → Playback is resolved on the client using youtubei.js.
+Beats — Media Router (Lightweight Metadata API & Stream Failover)
+─────────────────────────────────────────────────────────────────
+ytmusicapi     → Handles high-speed metadata search, charts, playlists, moods, and queues.
+stream_resolver → Multi-tier M4A stream resolver (Cache, Piped Pool, yt-dlp iOS/mweb fallback).
 """
 
 import os
@@ -11,12 +11,16 @@ import json
 import uuid
 import asyncio
 import logging
-from typing import Optional
+import httpx
+from typing import Optional, Any, Dict
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
+
 from app.models.schemas import Song
 from app.core.config import get_settings
+from app.services.stream_resolver import resolve_m4a_stream
 
 logger = logging.getLogger("beats.media")
 router = APIRouter(prefix="/api/yt", tags=["media"])
@@ -109,7 +113,7 @@ def _ytmusic_track_to_song(track: dict, stream_url: str) -> Song:
     )
 
 
-# ── Production Endpoints ──────────────────────────────────────────────────────
+# ── Production Metadata & Search Endpoints ────────────────────────────────────
 
 @router.get("/search", response_model=list[Song])
 async def search_media(
@@ -119,7 +123,7 @@ async def search_media(
     source: str = Query(default="youtube"),
     limit: int = Query(default=1, ge=1, le=10),
 ):
-    """Production Search Router: Instantly runs metadata calls with zero server overhead."""
+    """Production Search Router: Metadata calls with Cache-Control headers."""
     response.headers["Cache-Control"] = "public, max-age=3600"
     if source == "soundcloud":
         return []
@@ -139,7 +143,6 @@ async def search_media(
         for track in raw[:limit]:
             vid_id = track.get("videoId")
             if vid_id:
-                # Retain structural compatibility. Stream URL is now fully resolved on client.
                 stream_link = f"{base_url}api/yt/stream?video_id={vid_id}"
                 songs.append(_ytmusic_track_to_song(track, stream_link))
                 
@@ -268,17 +271,64 @@ async def get_charts(
         return []
 
 
-# ── CORS Proxy & Refresh Failover Endpoints ───────────────────────────────────
+@router.get("/playlist", response_model=list[Song])
+async def get_playlist(
+    request: Request,
+    response: Response,
+    playlist_id: str = Query(...),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    """Fetches playlist tracks from YouTube Music."""
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    ytmusic = get_ytmusic()
+    if not ytmusic:
+        return []
+    try:
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, lambda: ytmusic.get_playlist(playlist_id, limit=limit))
+        tracks = res.get("tracks", []) if isinstance(res, dict) else []
+        songs = []
+        base_url = str(request.base_url)
+        for t in tracks[:limit]:
+            vid_id = t.get("videoId")
+            if vid_id:
+                stream_link = f"{base_url}api/yt/stream?video_id={vid_id}"
+                songs.append(_ytmusic_track_to_song(t, stream_link))
+        return songs
+    except Exception as e:
+        logger.warning(f"[Playlist] Fetch failed: {e}")
+        return []
 
-import httpx
-from pydantic import BaseModel
-from typing import Any, Dict, Optional
+
+@router.get("/moods")
+async def get_moods(response: Response):
+    """Fetches mood and genre categories."""
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    ytmusic = get_ytmusic()
+    if not ytmusic:
+        return {"categories": []}
+    try:
+        loop = asyncio.get_event_loop()
+        moods_data = await loop.run_in_executor(None, lambda: ytmusic.get_mood_categories())
+        return moods_data
+    except Exception as e:
+        logger.warning(f"[Moods] Fetch failed: {e}")
+        return {"categories": []}
+
+
+# ── CORS Proxy & Stream Resolution Endpoints ──────────────────────────────────
 
 class ProxyRequest(BaseModel):
     url: str
     method: str = "GET"
     headers: Dict[str, str] = {}
     body: Optional[Any] = None
+
+
+class StreamRefreshRequest(BaseModel):
+    video_id: str
+    provider: Optional[str] = "youtube"
+
 
 @router.post("/proxy")
 async def yt_proxy(req: ProxyRequest):
@@ -322,84 +372,47 @@ async def yt_proxy(req: ProxyRequest):
 @router.get("/stream")
 async def stream_audio(video_id: str = Query(...)):
     """
-    Fallback direct audio stream resolver for backend-routed audio links.
-    Concurrently resolves stream URL via Piped API instance pool and redirects to it.
+    Direct audio stream resolver endpoint.
+    Uses multi-tier StreamResolver engine (Cache -> Piped Pool M4A -> yt-dlp iOS/mweb fallback).
     """
-    piped_instances = [
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.yt",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.us.to",
-    ]
-
-    async def fetch_stream(instance: str) -> str:
-        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-            res = await client.get(f"{instance}/streams/{video_id}")
-            if res.status_code == 200:
-                data = res.json()
-                audio_streams = data.get("audioStreams", [])
-                if audio_streams:
-                    return audio_streams[0].get("url")
-        raise ValueError(f"Failed to fetch from {instance}")
-
-    tasks = [asyncio.create_task(fetch_stream(inst)) for inst in piped_instances]
     try:
-        for completed_task in asyncio.as_completed(tasks):
-            try:
-                url = await completed_task
-                if url:
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
-                    return RedirectResponse(url=url, status_code=307)
-            except Exception as e:
-                logger.warning(f"Concurrently failed to resolve stream URL: {e}")
-    finally:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
+        url = await resolve_m4a_stream(video_id)
+        return RedirectResponse(
+            url=url,
+            status_code=307,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Type": "audio/mp4",
+                "Cache-Control": "public, max-age=3600",
+            }
+        )
+    except Exception as e:
+        logger.error(f"[Stream Endpoint Failed] video_id={video_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to resolve stream: {str(e)}")
 
-    raise HTTPException(status_code=502, detail="Failed to resolve stream link from fallback pool")
+
+@router.post("/refresh")
+async def refresh_stream_post(payload: StreamRefreshRequest):
+    """
+    Refreshes direct audio stream URL via high-reliability stream resolver.
+    Accepts JSON body: { "video_id": "...", "provider": "youtube" }
+    """
+    try:
+        url = await resolve_m4a_stream(payload.video_id)
+        return {"status": "success", "url": url}
+    except Exception as e:
+        logger.error(f"[Refresh POST Failed] video_id={payload.video_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to resolve stream: {str(e)}")
 
 
 @router.get("/refresh")
-async def refresh_stream(video_id: str, source: str = "youtube"):
+async def refresh_stream_get(video_id: str = Query(...), source: str = "youtube"):
     """
-    Refreshes direct audio stream URL via Piped API instance failover pool concurrently.
+    Refreshes direct audio stream URL (GET query parameter fallback).
     """
-    piped_instances = [
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.yt",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.us.to",
-    ]
-    
-    async def fetch_from_instance(instance: str) -> str:
-        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-            res = await client.get(f"{instance}/streams/{video_id}")
-            if res.status_code == 200:
-                data = res.json()
-                audio_streams = data.get("audioStreams", [])
-                if audio_streams:
-                    return audio_streams[0].get("url")
-        raise ValueError(f"Failed to fetch from {instance}")
-
-    tasks = [asyncio.create_task(fetch_from_instance(inst)) for inst in piped_instances]
     try:
-        for completed_task in asyncio.as_completed(tasks):
-            try:
-                url = await completed_task
-                if url:
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
-                    return {"url": url}
-            except Exception as e:
-                logger.warning(f"Concurrently failed to fetch stream: {e}")
-    finally:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-            
-    raise HTTPException(status_code=502, detail="Failed to resolve stream from all public fallbacks")
-
+        url = await resolve_m4a_stream(video_id)
+        return {"status": "success", "url": url}
+    except Exception as e:
+        logger.error(f"[Refresh GET Failed] video_id={video_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to resolve stream: {str(e)}")
