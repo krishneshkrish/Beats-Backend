@@ -71,9 +71,9 @@ app.add_middleware(
     allow_origins=origins,
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS", "HEAD"],
+    allow_methods=["GET", "POST", "OPTIONS", "HEAD", "PUT", "DELETE"],
     allow_headers=["*"],
-    expose_headers=["Content-Type", "Range", "Accept-Ranges", "Content-Length", "Content-Range"],
+    expose_headers=["Authorization", "Content-Type", "Range", "Accept-Ranges", "Content-Length", "Content-Range"],
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────

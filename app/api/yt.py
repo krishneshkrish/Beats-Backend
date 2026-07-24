@@ -1,8 +1,8 @@
 """
-Beats — Media Router (Lightweight Metadata API & Stream Failover)
-─────────────────────────────────────────────────────────────────
+Beats — Media Router (High-Performance Metadata API)
+────────────────────────────────────────────────────
 ytmusicapi     → Handles high-speed metadata search, charts, playlists, moods, and queues.
-stream_resolver → Multi-tier M4A stream resolver (Cache, Piped Pool, yt-dlp iOS/mweb fallback).
+stream_resolver → Lightweight cache helper; stream resolution offloaded to client edge proxy.
 """
 
 import os
@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from app.models.schemas import Song
 from app.core.config import get_settings
-from app.services.stream_resolver import resolve_m4a_stream
+from app.services.stream_resolver import get_cached_stream
 
 logger = logging.getLogger("beats.media")
 router = APIRouter(prefix="/api/yt", tags=["media"])
@@ -372,13 +372,13 @@ async def yt_proxy(req: ProxyRequest):
 @router.get("/stream")
 async def stream_audio(video_id: str = Query(...)):
     """
-    Direct audio stream resolver endpoint.
-    Uses multi-tier StreamResolver engine (Cache -> Piped Pool M4A -> yt-dlp iOS/mweb fallback).
+    Deprecated Stream Endpoint.
+    Redirects if cached; otherwise notifies client that stream resolution is offloaded to edge proxy.
     """
-    try:
-        url = await resolve_m4a_stream(video_id)
+    cached = get_cached_stream(video_id)
+    if cached:
         return RedirectResponse(
-            url=url,
+            url=cached,
             status_code=307,
             headers={
                 "Accept-Ranges": "bytes",
@@ -386,33 +386,38 @@ async def stream_audio(video_id: str = Query(...)):
                 "Cache-Control": "public, max-age=3600",
             }
         )
-    except Exception as e:
-        logger.error(f"[Stream Endpoint Failed] video_id={video_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to resolve stream: {str(e)}")
+    return {
+        "status": "deprecated",
+        "message": "Stream resolution offloaded to client edge proxy",
+        "video_id": video_id,
+    }
 
 
 @router.post("/refresh")
 async def refresh_stream_post(payload: StreamRefreshRequest):
     """
-    Refreshes direct audio stream URL via high-reliability stream resolver.
-    Accepts JSON body: { "video_id": "...", "provider": "youtube" }
+    Deprecated Refresh Endpoint.
     """
-    try:
-        url = await resolve_m4a_stream(payload.video_id)
-        return {"status": "success", "url": url}
-    except Exception as e:
-        logger.error(f"[Refresh POST Failed] video_id={payload.video_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to resolve stream: {str(e)}")
+    cached = get_cached_stream(payload.video_id)
+    if cached:
+        return {"status": "success", "url": cached}
+    return {
+        "status": "deprecated",
+        "message": "Stream refresh offloaded to client edge proxy",
+        "video_id": payload.video_id,
+    }
 
 
 @router.get("/refresh")
 async def refresh_stream_get(video_id: str = Query(...), source: str = "youtube"):
     """
-    Refreshes direct audio stream URL (GET query parameter fallback).
+    Deprecated Refresh GET Endpoint.
     """
-    try:
-        url = await resolve_m4a_stream(video_id)
-        return {"status": "success", "url": url}
-    except Exception as e:
-        logger.error(f"[Refresh GET Failed] video_id={video_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to resolve stream: {str(e)}")
+    cached = get_cached_stream(video_id)
+    if cached:
+        return {"status": "success", "url": cached}
+    return {
+        "status": "deprecated",
+        "message": "Stream refresh offloaded to client edge proxy",
+        "video_id": video_id,
+    }
